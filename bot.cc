@@ -4,6 +4,8 @@
 #include <iostream>
 #include <queue>
 
+#include <vector>
+#include <unordered_map>
 
 using namespace sc2;
 
@@ -49,24 +51,43 @@ private: // Bot Global Variables
     size_t step_count = 0;
 
     Point2D spawn;
-    Point2D enemy_spawn;
-
+    Point2D enemy_spawn; // Find via scouting ( Observation()->GetGameInfo().enemy_start_locations returns a std::vector<Point2D> )
 
     int target_worker_count;
+
+    // Defines our target wave composition
+    std::unordered_map<UNIT_TYPEID, int> WAVECOMP = {
+        { UNIT_TYPEID::TERRAN_MARINE, 10 }
+    };
+
+    // Holds vectors of unit pointers. Each vector represents one wave
+    std::vector<std::vector <const Unit*>> waves;
+
+    // Temp
+    // Tag identifying our chosen scouting SCV
+    Tag scout = 0;
 
 public:
     virtual void OnGameStart() final {
         MultiplayerBot::OnGameStart();
 
+        // Game etiquette
+        //Actions()->SendChat("glhf");
+
         // Set spawn
         const ObservationInterface* observation = Observation();
         Point3D temp = observation->GetStartLocation();
         spawn = Point2D(temp.x, temp.y);
+
+        // waves must be initialized with an empty wave
+        std::vector<const Unit*> w;
+        waves.push_back(w);
     }
 
     virtual void OnStep() final {
         step_count++;
 
+        handleWaves();
 
         BuildOrder();
 
@@ -80,60 +101,129 @@ public:
 
     virtual void OnBuildingConstructionComplete(const sc2::Unit* unit)
     {
+
     }
 
     virtual void OnUnitCreated(const sc2::Unit *unit)
     {
-
+        switch (unit->unit_type.ToType()) {
+        case UNIT_TYPEID::TERRAN_SCV: {
+            if (scout == 0) {
+                scout = unit->tag;
+            }
+            break;
+        }
+        case UNIT_TYPEID::TERRAN_MARINE: {
+            addToWave(unit);
+            break;
+        }
+        }
     }
 
-    virtual void OnUnitDestroyed(const sc2::Unit *unit) 
+    virtual void OnUnitDestroyed(const sc2::Unit *unit)
     {
 
     }
 
-    virtual void OnUnitIdle(const Unit* unit)  {
+    virtual void OnUnitIdle(const Unit* unit) {
 
         switch (unit->unit_type.ToType()) {
-            case UNIT_TYPEID::TERRAN_SCV: {
-                const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
-                if (!mineral_target) {
-                    break;
-                }
-                Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
-                break;
-            }
-            case UNIT_TYPEID::TERRAN_MULE: {
-                const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
-                if (!mineral_target) {
-                    break;
-                }
-                Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
-                break;
-            }
-            case UNIT_TYPEID::TERRAN_BARRACKS: {
+        case UNIT_TYPEID::TERRAN_SCV: {
 
-                // TODO: Add Actual Logic on Deciding Which Addon To Build
-                TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_BARRACKS, unit->tag);
+            if (unit->tag == scout) {
+                ScoutWithUnit(unit, Observation());
+                break;
+            }
 
-                // TODO: Add Actual Logic on Deciding Which Unit To Build
-                Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
+            const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
+            if (!mineral_target) {
+                break;
+            }
+            Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
+            break;
+        }
+        case UNIT_TYPEID::TERRAN_MULE: {
+            const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
+            if (!mineral_target) {
+                break;
+            }
+            Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
+            break;
+        }
+        case UNIT_TYPEID::TERRAN_BARRACKS: {
 
-                break;
-            }
-            case UNIT_TYPEID::TERRAN_MARINE: {
-                const GameInfo& game_info = Observation()->GetGameInfo();
-                Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Point2D(staging_location_.x, staging_location_.y));
-                break;
-            }
-            default: {
-                break;
-            }
+            // TODO: Add Actual Logic on Deciding Which Addon To Build
+            TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_BARRACKS, unit->tag);
+
+            // TODO: Add Actual Logic on Deciding Which Unit To Build
+            Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
+
+            break;
+        }
+        case UNIT_TYPEID::TERRAN_MARINE: {
+            const GameInfo& game_info = Observation()->GetGameInfo();
+
+            Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Point2D(staging_location_.x, staging_location_.y));
+
+            break;
+        }
+        default: {
+            break;
+        }
         }
     }
 
 
 private:
+    // Returns the number of the given unit type in the given wave
+    int countTypeInWave(UNIT_TYPEID uid, std::vector<const Unit*> wave) {
+        int count = 0;
+        for (int i = 0; i < wave.size(); ++i) {
+            if (wave[i]->unit_type.ToType() == uid) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    void addToWave(const Unit* u) {
+        if (countTypeInWave(u->unit_type.ToType(), waves[waves.size() - 1]) < WAVECOMP[u->unit_type.ToType()]) {
+            // Can fit more of this unit type in this wave
+            waves[waves.size() - 1].push_back(u);
+        }
+        else {
+            // No empty spots found, create new wave and add.
+            std::vector<const Unit*> w;
+            waves.push_back(w);
+            waves[waves.size() - 1].push_back(u);
+        }
+        //std::cout << "Added " << UnitTypeToName(u->unit_type.ToType()) << " to wave " << waves.size() - 1 << std::endl;
+    }
+
+    // Returns true iff the given wave has a complete composition
+    bool waveReady(std::vector<const Unit*> wave) {
+        for (std::pair<UNIT_TYPEID, int> type : WAVECOMP) {
+            if (countTypeInWave(type.first, wave) < type.second) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // If any given wave has a complete composition, order it to attack
+    void handleWaves() {
+        const ObservationInterface* observation = Observation();
+        for (auto wave : waves) {
+            if (waveReady(wave)) {
+                for (auto unit : wave) {
+                    // For now this just picks a random possible enemy location, later we'll scout for the actual spawn.
+                    Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Observation()->GetGameInfo().enemy_start_locations[0]);
+                }
+                // Can we remove the wave after issuing this command?
+            }
+        }
+    }
+
     size_t CountUnitType(UNIT_TYPEID unit_type) {
         return Observation()->GetUnits(Unit::Alliance::Self, IsUnit(unit_type)).size();
     }
@@ -257,63 +347,63 @@ private:
         // Build
 
 
-            // Try Convert Command Center
-            if (!barracks.empty())
-            {
-                for (const auto& base : bases) {
-                    if (base->unit_type == UNIT_TYPEID::TERRAN_COMMANDCENTER && observation->GetMinerals() > 150) {
-                        Actions()->UnitCommand(base, ABILITY_ID::MORPH_ORBITALCOMMAND);
-                    }
+        // Try Convert Command Center
+        if (!barracks.empty())
+        {
+            for (const auto& base : bases) {
+                if (base->unit_type == UNIT_TYPEID::TERRAN_COMMANDCENTER && observation->GetMinerals() > 150) {
+                    Actions()->UnitCommand(base, ABILITY_ID::MORPH_ORBITALCOMMAND);
                 }
             }
+        }
 
-            // Try Build Depot - Calculate our own total supply cap here to account for buildings in progress..
-            size_t FoodCapInProgress = supply_depots.size() * 8 + bases.size() * 15;
+        // Try Build Depot - Calculate our own total supply cap here to account for buildings in progress..
+        size_t FoodCapInProgress = supply_depots.size() * 8 + bases.size() * 15;
 
-            if (observation->GetFoodUsed() >= FoodCapInProgress - 3)
+        if (observation->GetFoodUsed() >= FoodCapInProgress - 3)
+        {
+            TryBuildStructure(ABILITY_ID::BUILD_SUPPLYDEPOT);
+        }
+
+        // Try Build Refinery
+        if (barracks.size() >= 2 && orbitals.size() >= 1 && refinerys.size() < orbitals.size())
+        {
+            for (auto u : bases)
             {
-                TryBuildStructure(ABILITY_ID::BUILD_SUPPLYDEPOT);
+                TryBuildGas(ABILITY_ID::BUILD_REFINERY, UNIT_TYPEID::TERRAN_SCV, Point2D(u->pos.x, u->pos.y));
             }
+        }
 
-            // Try Build Refinery
-            if (barracks.size() >= 2 && orbitals.size() >= 1 && refinerys.size() < orbitals.size() )
-            {
-                for (auto u : bases)
-                {
-                    TryBuildGas(ABILITY_ID::BUILD_REFINERY, UNIT_TYPEID::TERRAN_SCV, Point2D(u->pos.x, u->pos.y));
-                }
-            }
+        // Try Build Barracks
+        if (barracks.size() < barracks_count_target && observation->GetMinerals() > 170)
+        {
+            TryBuildStructure(ABILITY_ID::BUILD_BARRACKS);
+        }
 
-            // Try Build Barracks
-            if (barracks.size() < barracks_count_target && observation->GetMinerals() > 170)
-            {
-                TryBuildStructure(ABILITY_ID::BUILD_BARRACKS);
-            }
+        // Try Build Factory
+        if (factorys.size() < factory_count_target && barracks.size() > 3)
+        {
+            TryBuildStructure(ABILITY_ID::BUILD_FACTORY);
+        }
 
-            // Try Build Factory
-            if (factorys.size() < factory_count_target && barracks.size() > 3)
-            {
-                TryBuildStructure(ABILITY_ID::BUILD_FACTORY);
-            }
+        // Try Build Engineering Bay
+        if (engineering_bays.size() < engineering_bay_count_target && barracks.size() > 3)
+        {
+            TryBuildStructure(ABILITY_ID::BUILD_ENGINEERINGBAY);
+        }
 
-            // Try Build Engineering Bay
-            if (engineering_bays.size() < engineering_bay_count_target && barracks.size() > 3)
-            {
-                TryBuildStructure(ABILITY_ID::BUILD_ENGINEERINGBAY);
-            }
-
-            // Try Expand
-            if (barracks.size() >= 2 && bases.size() <= 2 && observation->GetMinerals() > 400 * bases.size())
-            {
-                TryExpand(ABILITY_ID::BUILD_COMMANDCENTER, UNIT_TYPEID::TERRAN_SCV);
-            }
+        // Try Expand
+        if (barracks.size() >= 2 && bases.size() <= 2 && observation->GetMinerals() > 400 * bases.size())
+        {
+            TryExpand(ABILITY_ID::BUILD_COMMANDCENTER, UNIT_TYPEID::TERRAN_SCV);
+        }
 
 
-            // Try Build Barracks Addons
-            // TODO - May be moved to Barracks IDLE
+        // Try Build Barracks Addons
+        // TODO - May be moved to Barracks IDLE
 
-            // Try Build Factory Addons
-            // TODO - May be moved to Barracks IDLE
+        // Try Build Factory Addons
+        // TODO - May be moved to Barracks IDLE
     }
 
     // Helper Functions
