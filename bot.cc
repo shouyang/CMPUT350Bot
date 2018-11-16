@@ -52,47 +52,46 @@ private: // Bot Global Variables
 	// Note: ~1200 steps == 1 in-game minute
     size_t step_count = 0;
 
-    Point2D spawn;
-    Point2D enemy_spawn;
-
-
-
     int target_worker_count;
-
 	double marine_to_maruader_ratio = 2.7;
 
+	std::queue<Point2D> enemy_unit_locations;
 
-public:
+public: // Public Functions Of Bot - On Event Handles Provided By Interface
 
     virtual void OnGameStart() final {
+		// Call Setup Function of Multiplayer Bot -  Sets up Many Helpful constants
         MultiplayerBot::OnGameStart();
-
-        // Set spawn
-        const ObservationInterface* observation = Observation();
-        Point3D temp = observation->GetStartLocation();
-        spawn = Point2D(temp.x, temp.y);
-
+		const ObservationInterface* observation = Observation();
     }
 
     virtual void OnStep() final {
         step_count++;
+		const ObservationInterface* observation = Observation();
 
 		if (step_count % 5 == 0)
 		{
 			BuildOrder();
 			ManageWorkers();
 		}
+
 		if (step_count % 100 == 0)
 		{
 			ManageRallyPoints();
 		}
 
-
+		if (step_count % 600 == 0)
+		{
+			ManageScouts();
+		}
     }
 
     virtual void OnUnitEnterVision(const sc2::Unit *unit)
     {
-
+		if (unit->alliance == Unit::Enemy)
+		{
+			enemy_unit_locations.push(unit->pos);
+		}
     }
 
     virtual void OnBuildingConstructionComplete(const sc2::Unit* unit) {}
@@ -111,19 +110,11 @@ public:
 
         switch (unit->unit_type.ToType()) {
             case UNIT_TYPEID::TERRAN_SCV: {
-                const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
-                if (!mineral_target) {
-                    break;
-                }
-                Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
+				OnWorkerIdle(unit);
                 break;
             }
             case UNIT_TYPEID::TERRAN_MULE: {
-                const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
-                if (!mineral_target) {
-                    break;
-                }
-                Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
+				OnWorkerIdle(unit);
                 break;
             }
             case UNIT_TYPEID::TERRAN_BARRACKS: {
@@ -131,12 +122,8 @@ public:
 				size_t tech_lab_count = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB) + 1;
 				size_t reactor_count  = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSREACTOR) + 1; 
 
-
-				size_t marine_count = CountUnitType(UNIT_TYPEID::TERRAN_MARINE) + 1;
+				size_t marine_count   = CountUnitType(UNIT_TYPEID::TERRAN_MARINE) + 1;
 				size_t maruader_count = CountUnitType(UNIT_TYPEID::TERRAN_MARAUDER) + 1;
-
-				std::cout << tech_lab_count << std::endl;
-				std::cout << reactor_count << std::endl;
 
 
 				if ( (tech_lab_count/ reactor_count) < 2)
@@ -147,9 +134,6 @@ public:
 				{
 					TryBuildAddOn(ABILITY_ID::BUILD_REACTOR_BARRACKS, unit->tag);
 				}
-
-
-                // TODO: Add Actual Logic on Deciding Which Unit To Build
 
 				if (marine_count / maruader_count > marine_to_maruader_ratio)
 				{
@@ -164,7 +148,6 @@ public:
                 break;
             }
 			case UNIT_TYPEID::TERRAN_FACTORY: {
-
 				TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_FACTORY, unit->tag);
 				Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_SIEGETANK);
 			}
@@ -204,76 +187,7 @@ public:
     }
 
 
-private:
-    size_t CountUnitType(UNIT_TYPEID unit_type) {
-        return Observation()->GetUnits(Unit::Alliance::Self, IsUnit(unit_type)).size();
-    }
-
-    bool TryBuildStructure(ABILITY_ID ability_type_for_structure, UNIT_TYPEID unit_type = UNIT_TYPEID::TERRAN_SCV) {
-        const ObservationInterface* observation = Observation();
-
-        // If a unit already is building a supply structure of this type, do nothing.
-        // Also get an scv to build the structure.
-        const Unit* unit_to_build = nullptr;
-        Units units = observation->GetUnits(Unit::Alliance::Self);
-        for (const auto& unit : units) {
-            for (const auto& order : unit->orders) {
-                if (order.ability_id == ability_type_for_structure) {
-                    continue;
-                }
-            }
-
-            if (unit->unit_type == unit_type) {
-                unit_to_build = unit;
-            }
-        }
-
-        float rx = GetRandomScalar();
-        float ry = GetRandomScalar();
-
-        Actions()->UnitCommand(unit_to_build,
-            ability_type_for_structure,
-            Point2D(unit_to_build->pos.x + rx * 10.0f, unit_to_build->pos.y + ry * 10.0f));
-
-        return true;
-    }
-
-    bool TryBuildAddOn(AbilityID ability_type_for_structure, Tag base_structure) {
-        float rx = GetRandomScalar();
-        float ry = GetRandomScalar();
-        const Unit* unit = Observation()->GetUnit(base_structure);
-
-        if (unit->build_progress != 1) {
-            return false;
-        }
-
-        Point2D build_location = Point2D(unit->pos.x + rx * 15, unit->pos.y + ry * 15);
-
-        Units units = Observation()->GetUnits(Unit::Self, IsStructure(Observation()));
-
-        if (Query()->Placement(ability_type_for_structure, unit->pos, unit)) {
-            Actions()->UnitCommand(unit, ability_type_for_structure);
-            return true;
-        }
-
-        float distance = std::numeric_limits<float>::max();
-        for (const auto& u : units) {
-            float d = Distance2D(u->pos, build_location);
-            if (d < distance) {
-                distance = d;
-            }
-        }
-        if (distance < 6) {
-            return false;
-        }
-
-        if (Query()->Placement(ability_type_for_structure, build_location, unit)) {
-            Actions()->UnitCommand(unit, ability_type_for_structure, build_location);
-            return true;
-        }
-        return false;
-
-    }
+private: // Private Functions of Bot
 
     void ManageWorkers()
     {
@@ -341,7 +255,7 @@ private:
             // Try Build Depot - Calculate our own total supply cap here to account for buildings in progress..
             size_t FoodCapInProgress = supply_depots.size() * 8 + bases.size() * 15;
 
-            if (observation->GetFoodUsed() >= FoodCapInProgress - 3)
+            if (observation->GetFoodUsed() >= FoodCapInProgress - 3 && observation->GetFoodCap() != 200)
             {
                 TryBuildStructure(ABILITY_ID::BUILD_SUPPLYDEPOT);
             }
@@ -381,10 +295,10 @@ private:
 
 
             // Try Build Barracks Addons
-            // TODO - May be moved to Barracks IDLE
+            // Moved To Barracks On Idle
 
             // Try Build Factory Addons
-            // TODO - May be moved to Barracks IDLE
+            // Moved To Factory On Idle
     }
 
 	void ManageRallyPoints()
@@ -418,6 +332,32 @@ private:
 
 	}
 
+	void ManageScouts()
+	{
+		const ObservationInterface* observation = Observation();
+		for (Point2D point : game_info_.enemy_start_locations)
+		{
+			const Unit* unit;
+			GetRandomUnit(unit, observation, UNIT_TYPEID::TERRAN_MARINE);
+
+			if (unit && unit->orders.empty())
+			{
+				Actions()->UnitCommand(unit, ABILITY_ID::SMART, point);
+			}
+		}
+	}
+
+
+	// Per Unit Functions
+
+	void OnWorkerIdle(const Unit* unit)
+	{
+		const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
+		if (!mineral_target)
+			return;
+
+		Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
+	}
 
     // Helper Functions
     const Unit* FindNearestMineralPatch(const Point2D& start) {
@@ -436,6 +376,75 @@ private:
         return target;
     }
 
+	size_t CountUnitType(UNIT_TYPEID unit_type) {
+		return Observation()->GetUnits(Unit::Alliance::Self, IsUnit(unit_type)).size();
+	}
+
+	bool TryBuildStructure(ABILITY_ID ability_type_for_structure, UNIT_TYPEID unit_type = UNIT_TYPEID::TERRAN_SCV) {
+		const ObservationInterface* observation = Observation();
+
+		// If a unit already is building a supply structure of this type, do nothing.
+		// Also get an scv to build the structure.
+		const Unit* unit_to_build = nullptr;
+		Units units = observation->GetUnits(Unit::Alliance::Self);
+		for (const auto& unit : units) {
+			for (const auto& order : unit->orders) {
+				if (order.ability_id == ability_type_for_structure) {
+					continue;
+				}
+			}
+
+			if (unit->unit_type == unit_type) {
+				unit_to_build = unit;
+			}
+		}
+
+		float rx = GetRandomScalar();
+		float ry = GetRandomScalar();
+
+		Actions()->UnitCommand(unit_to_build,
+			ability_type_for_structure,
+			Point2D(unit_to_build->pos.x + rx * 10.0f, unit_to_build->pos.y + ry * 10.0f));
+
+		return true;
+	}
+
+	bool TryBuildAddOn(AbilityID ability_type_for_structure, Tag base_structure) {
+		float rx = GetRandomScalar();
+		float ry = GetRandomScalar();
+		const Unit* unit = Observation()->GetUnit(base_structure);
+
+		if (unit->build_progress != 1) {
+			return false;
+		}
+
+		Point2D build_location = Point2D(unit->pos.x + rx * 15, unit->pos.y + ry * 15);
+
+		Units units = Observation()->GetUnits(Unit::Self, IsStructure(Observation()));
+
+		if (Query()->Placement(ability_type_for_structure, unit->pos, unit)) {
+			Actions()->UnitCommand(unit, ability_type_for_structure);
+			return true;
+		}
+
+		float distance = std::numeric_limits<float>::max();
+		for (const auto& u : units) {
+			float d = Distance2D(u->pos, build_location);
+			if (d < distance) {
+				distance = d;
+			}
+		}
+		if (distance < 6) {
+			return false;
+		}
+
+		if (Query()->Placement(ability_type_for_structure, build_location, unit)) {
+			Actions()->UnitCommand(unit, ability_type_for_structure, build_location);
+			return true;
+		}
+		return false;
+
+	}
 
 
 

@@ -225,7 +225,8 @@ bool MultiplayerBot::FindEnemyPosition(Point2D& target_pos) {
     if (game_info_.enemy_start_locations.empty()) {
         return false;
     }
-    target_pos = game_info_.enemy_start_locations.front();
+
+	target_pos = game_info_.enemy_start_locations.front();
     return true;
 }
 
