@@ -59,7 +59,7 @@ private: // Bot Global Variables
 
     int target_worker_count;
 
-	double marine_to_maruader_ratio = 3;
+	double marine_to_maruader_ratio = 2.7;
 
 
 public:
@@ -163,16 +163,39 @@ public:
 
                 break;
             }
+			case UNIT_TYPEID::TERRAN_FACTORY: {
+
+				TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_FACTORY, unit->tag);
+				Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_SIEGETANK);
+			}
+
+			case UNIT_TYPEID::TERRAN_ENGINEERINGBAY: {
+				size_t marine_count = CountUnitType(UNIT_TYPEID::TERRAN_MARINE) + 1;
+				size_t maruader_count = CountUnitType(UNIT_TYPEID::TERRAN_MARAUDER) + 1;
+
+				// Only try to build upgrades if our army is sufficently big to benefit.
+				if (marine_count + maruader_count * 2 > 40)
+				{
+					Actions()->UnitCommand(unit, ABILITY_ID::RESEARCH_TERRANINFANTRYWEAPONS);
+					Actions()->UnitCommand(unit, ABILITY_ID::RESEARCH_TERRANINFANTRYARMOR);
+				}
+
+			}
+
             case UNIT_TYPEID::TERRAN_MARINE: {
-                const GameInfo& game_info = Observation()->GetGameInfo();
                 Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Point2D(staging_location_.x, staging_location_.y));
                 break;
             }
 			case UNIT_TYPEID::TERRAN_MARAUDER: {
-				const GameInfo& game_info = Observation()->GetGameInfo();
 				Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Point2D(staging_location_.x, staging_location_.y));
 				break;
 			}
+			case UNIT_TYPEID::TERRAN_SIEGETANK: {
+				Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Point2D(staging_location_.x, staging_location_.y));
+				break;
+			}
+
+
 
             default: {
                 break;
