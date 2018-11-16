@@ -1,9 +1,11 @@
 #include <sc2api/sc2_api.h>
-#include "bot_examples.h"
 
 #include <iostream>
 #include <queue>
+#include <algorithm>
 
+#include "bot_examples.h"
+#include "utils.h"
 
 using namespace sc2;
 
@@ -46,15 +48,22 @@ struct IsStructure {
 class Bot : public MultiplayerBot {
 
 private: // Bot Global Variables
+
+	// Note: ~1200 steps == 1 in-game minute
     size_t step_count = 0;
 
     Point2D spawn;
     Point2D enemy_spawn;
 
 
+
     int target_worker_count;
 
+	double marine_to_maruader_ratio = 3;
+
+
 public:
+
     virtual void OnGameStart() final {
         MultiplayerBot::OnGameStart();
 
@@ -62,15 +71,23 @@ public:
         const ObservationInterface* observation = Observation();
         Point3D temp = observation->GetStartLocation();
         spawn = Point2D(temp.x, temp.y);
+
     }
 
     virtual void OnStep() final {
         step_count++;
 
+		if (step_count % 5 == 0)
+		{
+			BuildOrder();
+			ManageWorkers();
+		}
+		if (step_count % 100 == 0)
+		{
+			ManageRallyPoints();
+		}
 
-        BuildOrder();
 
-        ManageWorkers();
     }
 
     virtual void OnUnitEnterVision(const sc2::Unit *unit)
@@ -78,9 +95,7 @@ public:
 
     }
 
-    virtual void OnBuildingConstructionComplete(const sc2::Unit* unit)
-    {
-    }
+    virtual void OnBuildingConstructionComplete(const sc2::Unit* unit) {}
 
     virtual void OnUnitCreated(const sc2::Unit *unit)
     {
@@ -113,11 +128,38 @@ public:
             }
             case UNIT_TYPEID::TERRAN_BARRACKS: {
 
-                // TODO: Add Actual Logic on Deciding Which Addon To Build
-                TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_BARRACKS, unit->tag);
+				size_t tech_lab_count = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB) + 1;
+				size_t reactor_count  = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSREACTOR) + 1; 
+
+
+				size_t marine_count = CountUnitType(UNIT_TYPEID::TERRAN_MARINE) + 1;
+				size_t maruader_count = CountUnitType(UNIT_TYPEID::TERRAN_MARAUDER) + 1;
+
+				std::cout << tech_lab_count << std::endl;
+				std::cout << reactor_count << std::endl;
+
+
+				if ( (tech_lab_count/ reactor_count) < 2)
+				{
+					TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_BARRACKS, unit->tag);
+				}
+				else
+				{
+					TryBuildAddOn(ABILITY_ID::BUILD_REACTOR_BARRACKS, unit->tag);
+				}
+
 
                 // TODO: Add Actual Logic on Deciding Which Unit To Build
-                Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
+
+				if (marine_count / maruader_count > marine_to_maruader_ratio)
+				{
+					Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARAUDER);
+					break;
+				}
+
+				// Two orders are here so to trigger a reactor that can build two marines at once.
+				Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
+				Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
 
                 break;
             }
@@ -126,6 +168,12 @@ public:
                 Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Point2D(staging_location_.x, staging_location_.y));
                 break;
             }
+			case UNIT_TYPEID::TERRAN_MARAUDER: {
+				const GameInfo& game_info = Observation()->GetGameInfo();
+				Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Point2D(staging_location_.x, staging_location_.y));
+				break;
+			}
+
             default: {
                 break;
             }
@@ -316,6 +364,38 @@ private:
             // TODO - May be moved to Barracks IDLE
     }
 
+	void ManageRallyPoints()
+	{
+		const ObservationInterface* observation = Observation();
+		Units bases = observation->GetUnits(Unit::Self, IsTownHall());
+
+		if (bases.size() == 1)
+		{
+			return;
+		}
+
+		if (bases.size() > 1)
+		{
+			const Unit* base_closest_to_mid = bases.front();
+
+			for (const Unit *u : bases)
+			{	
+				if (Distance2D(u->pos, getMapCenter(observation)) < (Distance2D(base_closest_to_mid->pos, getMapCenter(observation))))
+				{
+					base_closest_to_mid = u;
+				}
+			}
+			
+	
+			Point2D unit_vector_to_map_center = pointTowards(base_closest_to_mid->pos, getMapCenter(Observation()));
+
+			staging_location_.x = base_closest_to_mid->pos.x + unit_vector_to_map_center.x * 5.0f;
+			staging_location_.y = base_closest_to_mid->pos.y + unit_vector_to_map_center.y * 4.0f;
+		}
+
+	}
+
+
     // Helper Functions
     const Unit* FindNearestMineralPatch(const Point2D& start) {
         Units units = Observation()->GetUnits(Unit::Alliance::Neutral);
@@ -332,6 +412,9 @@ private:
         }
         return target;
     }
+
+
+
 
     // Constant Types From Example Terran Bot
     std::vector<UNIT_TYPEID> barrack_types = { UNIT_TYPEID::TERRAN_BARRACKSFLYING, UNIT_TYPEID::TERRAN_BARRACKS };

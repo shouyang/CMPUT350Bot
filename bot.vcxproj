@@ -131,9 +131,11 @@
   <ItemGroup>
     <ClCompile Include="bot_examples.cc" />
     <ClCompile Include="bot.cc" />
+    <ClCompile Include="utils.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bot_examples.h" />
+    <ClInclude Include="utils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
