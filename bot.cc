@@ -69,25 +69,28 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 		step_count++;
 		const ObservationInterface* observation = Observation();
 
-		if (step_count % 5 == 0)
+		if (step_count % 3 == 0)
 		{
 			BuildOrder();
 			ManageWorkers();
-
-
-			// std::cout << "Enemies Visible:" << observation->GetUnits(Unit::Enemy).size() << std::endl;
 		}
 
-		if (step_count % 100 == 0)
+		if (step_count % 99 == 0)
 		{
 			ManageRallyPoints();
 			ManageIdleArmyUnits();
 			ManageDefense();
 		}
 
-		if (step_count % 600 == 0)
+		if (step_count % 789 == 0)
 		{
 			ManageScouts();
+			ManageUpgrades();
+		}
+
+		if (step_count % 1200 == 0)
+		{
+			FlushKnownEnemyLocations();
 		}
 	}
 
@@ -96,6 +99,8 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 		if (unit->alliance == Unit::Enemy)
 		{
 			enemy_unit_locations.push(unit->pos);
+
+			std::cout << enemy_unit_locations.size() << std::endl;
 		}
 	}
 
@@ -138,49 +143,12 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 		}
 
 		case UNIT_TYPEID::TERRAN_BARRACKS: {
-
-			size_t tech_lab_count = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB) + 1;
-			size_t reactor_count = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSREACTOR) + 1;
-
-			size_t marine_count = CountUnitType(UNIT_TYPEID::TERRAN_MARINE) + 1;
-			size_t maruader_count = CountUnitType(UNIT_TYPEID::TERRAN_MARAUDER) + 1;
-
-
-			if ((tech_lab_count / reactor_count) < 2)
-			{
-				TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_BARRACKS, unit->tag);
-			}
-			else
-			{
-				TryBuildAddOn(ABILITY_ID::BUILD_REACTOR_BARRACKS, unit->tag);
-			}
-
-			if (marine_count / maruader_count > marine_to_maruader_ratio)
-			{
-				Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARAUDER);
-				break;
-			}
-
-			Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
-
+			HandleBarracks(unit);
 			break;
 		}
 		case UNIT_TYPEID::TERRAN_FACTORY: {
-			TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_FACTORY, unit->tag);
-			Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_SIEGETANK);
-		}
-
-		case UNIT_TYPEID::TERRAN_ENGINEERINGBAY: {
-			size_t marine_count = CountUnitType(UNIT_TYPEID::TERRAN_MARINE) + 1;
-			size_t maruader_count = CountUnitType(UNIT_TYPEID::TERRAN_MARAUDER) + 1;
-
-			// Only try to build upgrades if our army is sufficently big to benefit.
-			if (marine_count + maruader_count * 2 > 30)
-			{
-				Actions()->UnitCommand(unit, ABILITY_ID::RESEARCH_TERRANINFANTRYWEAPONSLEVEL1);
-				Actions()->UnitCommand(unit, ABILITY_ID::RESEARCH_TERRANINFANTRYARMORLEVEL1);
-			}
-
+			HandleFactory(unit);
+			break;
 		}
 
 		default: {
@@ -219,6 +187,42 @@ private: // Private Functions of Bot
 		}
 
 
+	}
+
+	void ManageUpgrades()
+	{
+		const ObservationInterface* observation = Observation();
+		// Setup - Get Upgrades Buildings
+		Units engineering_bays = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ENGINEERINGBAY));
+		Units armories = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ARMORY));
+		Units barracks_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB));
+		Units factorys_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_FACTORYTECHLAB));
+
+		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
+		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
+
+
+		bool past_five_minutes = step_count > 1200 * 5;
+		size_t marine_maruader_count = marines.size() + maruaders.size();
+		bool significant_bio_force = marine_maruader_count > 25;
+
+		// Try To Build Upgrades If Army Is Sufficent And Game Has Progressed Far Enough
+		if (past_five_minutes)
+		{
+			if (engineering_bays.size() > 0 && significant_bio_force)
+			{
+				const Unit* engineering_bay = engineering_bays.front();
+				Actions()->UnitCommand(engineering_bay, ABILITY_ID::RESEARCH_TERRANINFANTRYWEAPONS);
+				Actions()->UnitCommand(engineering_bay, ABILITY_ID::RESEARCH_TERRANINFANTRYARMOR);
+			}
+
+			if (barracks_tech.size() > 0 && significant_bio_force)
+			{
+				const Unit* barracks_tech_lab = barracks_tech.front();
+				Actions()->UnitCommand(barracks_tech, ABILITY_ID::RESEARCH_COMBATSHIELD);
+				Actions()->UnitCommand(barracks_tech, ABILITY_ID::RESEARCH_CONCUSSIVESHELLS);
+			}
+		}
 	}
 
 	void BuildOrder() {
@@ -262,6 +266,11 @@ private: // Private Functions of Bot
 		if (observation->GetFoodUsed() >= FoodCapInProgress - 3 && observation->GetFoodCap() != 200)
 		{
 			TryBuildStructure(ABILITY_ID::BUILD_SUPPLYDEPOT);
+
+			if (observation->GetMinerals() > 250 && observation->GetFoodUsed() == observation->GetFoodCap())
+			{
+				TryBuildStructure(ABILITY_ID::BUILD_SUPPLYDEPOT);
+			}
 		}
 
 		// Try Build Refinery
@@ -443,6 +452,43 @@ private: // Private Functions of Bot
 			}
 		}
 	}
+	// Per Factory Functions
+	void HandleBarracks(const Unit* unit)
+	{
+		size_t tech_lab_count = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB) + 1;
+		size_t reactor_count  = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSREACTOR) + 1;
+
+		size_t marine_count   = CountUnitType(UNIT_TYPEID::TERRAN_MARINE) + 1;
+		size_t maruader_count = CountUnitType(UNIT_TYPEID::TERRAN_MARAUDER) + 1;
+
+
+		if ((tech_lab_count / reactor_count) < 2)
+		{
+			TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_BARRACKS, unit->tag);
+		}
+		else
+		{
+			TryBuildAddOn(ABILITY_ID::BUILD_REACTOR_BARRACKS, unit->tag);
+		}
+
+		if (marine_count / maruader_count > marine_to_maruader_ratio)
+		{
+			Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARAUDER);
+		}
+
+		if (unit->orders.empty())
+		{
+			Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
+		}
+
+	}
+
+	void HandleFactory(const Unit* unit)
+	{
+		TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_FACTORY, unit->tag);
+		Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_SIEGETANK);
+	}
+
 
 	// Per Unit Functions
 
@@ -547,6 +593,16 @@ private: // Private Functions of Bot
 
 	}
 
+	void FlushKnownEnemyLocations()
+	{
+		for (int i = 0; i < 30; i++)
+		{
+			if (!enemy_unit_locations.empty())
+			{
+				enemy_unit_locations.pop();
+			}
+		}
+	}
 
 
 	// Constant Types From Example Terran Bot
