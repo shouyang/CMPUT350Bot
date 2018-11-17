@@ -69,26 +69,40 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 		step_count++;
 		const ObservationInterface* observation = Observation();
 
+
+		// Try To Avoid Doing Too Much Per Step Here
+		// Using Prime Numbers Between 0-1200 (1 In-game minute) to offload some work..
+
 		if (step_count % 3 == 0)
 		{
 			BuildOrder();
 			ManageWorkers();
 		}
 
-		if (step_count % 99 == 0)
+		if (step_count % 103 == 0)
 		{
 			ManageRallyPoints();
-			ManageIdleArmyUnits();
 			ManageDefense();
 		}
 
+		if (step_count % 367 == 0)
+		{
+			ManageIdleArmyUnits();
+		}
+		
+		
 		if (step_count % 789 == 0)
 		{
 			ManageScouts();
 			ManageUpgrades();
 		}
 
-		if (step_count % 1200 == 0)
+		if (step_count % 1000 == 0)
+		{
+			ManageAttack();
+		}
+
+		if (step_count % 2400 == 0)
 		{
 			FlushKnownEnemyLocations();
 		}
@@ -159,6 +173,57 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 
 
 private: // Private Functions of Bot
+
+	void ManageAttack()
+	{
+		const ObservationInterface* observation = Observation();
+		// Setup - Get Army Units
+
+		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
+		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
+		Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+
+		bool past_six_minutes = step_count > 1200 * 6;
+		bool significant_army = marines.size() + maruaders.size() > 20;
+
+		if (past_six_minutes && significant_army)
+		{
+			
+			if (enemy_unit_locations.size() > 0)
+			{
+				Point2D attack_location = enemy_unit_locations.front();
+				enemy_unit_locations.pop();
+
+
+				for (const Unit* unit : marines)
+				{
+					if (unit->orders.empty())
+					{
+						GoToPoint(unit, attack_location);
+					}
+				}
+
+				for (const Unit* unit : maruaders)
+				{
+					if (unit->orders.empty())
+					{
+						GoToPoint(unit, attack_location);
+					}
+				}
+
+				for (const Unit* unit : tanks)
+				{
+					if (unit->orders.empty())
+					{
+						GoToPoint(unit, attack_location);
+					}
+				}
+			}
+		}
+
+
+
+	}
 
 	void ManageWorkers()
 	{
