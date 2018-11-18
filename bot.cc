@@ -96,15 +96,17 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 			ManageIdleArmyUnits();
 		}
 		
-		if (step_count % 600 == 0)
+
+		if (step_count % 891 == 0)
 		{
-			ManageAttack();
+			ManageUpgrades();
 		}
 
-		if (step_count % 789 == 0)
+
+		if (step_count % 1200 == 0)
 		{
 			ManageScouts();
-			ManageUpgrades();
+			ManageAttack();
 		}
 
 
@@ -227,7 +229,7 @@ private: // Private Functions of Bot
 				// Order All Idle Units To Attack - new unit types must be added here for them to be included.
 				for (const Unit* unit : marines)
 				{
-					if (unit->orders.empty())
+					if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
 					{
 						GoToPoint(unit, attack_location);
 					}
@@ -235,7 +237,7 @@ private: // Private Functions of Bot
 
 				for (const Unit* unit : maruaders)
 				{
-					if (unit->orders.empty())
+					if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
 					{
 						GoToPoint(unit, attack_location);
 					}
@@ -243,7 +245,7 @@ private: // Private Functions of Bot
 
 				for (const Unit* unit : tanks)
 				{
-					if (unit->orders.empty())
+					if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
 					{
 						GoToPoint(unit, attack_location);
 					}
@@ -722,9 +724,13 @@ private: // Private Functions of Bot
 		float rx = GetRandomScalar();
 		float ry = GetRandomScalar();
 
-		Actions()->UnitCommand(unit_to_build,
-			ability_type_for_structure,
-			Point2D(unit_to_build->pos.x + rx * 10.0f, unit_to_build->pos.y + ry * 10.0f));
+		if (unit_to_build)
+		{
+			Actions()->UnitCommand(unit_to_build,
+				ability_type_for_structure,
+				Point2D(unit_to_build->pos.x + rx * 10.0f, unit_to_build->pos.y + ry * 10.0f));
+		}
+
 
 		return true;
 	}
