@@ -3,6 +3,7 @@
 #include <iostream>
 #include <queue>
 #include <algorithm>
+#include <math.h>
 
 #include "bot_examples.h"
 #include "utils.h"
@@ -90,17 +91,18 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 			ManageIdleArmyUnits();
 		}
 		
-		
+		if (step_count % 800 == 0)
+		{
+			ManageAttack();
+		}
+
 		if (step_count % 789 == 0)
 		{
 			ManageScouts();
 			ManageUpgrades();
 		}
 
-		if (step_count % 1000 == 0)
-		{
-			ManageAttack();
-		}
+
 
 		if (step_count % 2400 == 0)
 		{
@@ -419,16 +421,38 @@ private: // Private Functions of Bot
 	void ManageScouts()
 	{
 		const ObservationInterface* observation = Observation();
-		for (Point2D point : game_info_.enemy_start_locations)
-		{
-			const Unit* unit;
-			GetRandomUnit(unit, observation, UNIT_TYPEID::TERRAN_MARINE);
 
-			if (unit && unit->orders.empty())
+		bool in_first_10_minutes = step_count < 1200 * 10;
+
+		if (in_first_10_minutes)
+		{
+			for (Point2D point : game_info_.enemy_start_locations)
 			{
-				Actions()->UnitCommand(unit, ABILITY_ID::SMART, point);
+				const Unit* unit;
+				GetRandomUnit(unit, observation, UNIT_TYPEID::TERRAN_MARINE);
+
+				if (unit && unit->orders.empty())
+				{
+					Actions()->UnitCommand(unit, ABILITY_ID::SMART, point);
+				}
 			}
 		}
+		else
+		{
+			for (int i = 0; i < 3; i++)
+			{
+				const Unit* unit;
+				GetRandomUnit(unit, observation, UNIT_TYPEID::TERRAN_MARINE);
+
+				if (unit && unit->orders.empty())
+				{
+					ScoutWithUnit(unit, observation);
+				}
+
+			}
+		}
+
+
 	}
 
 	void ManageIdleArmyUnits()
@@ -660,7 +684,9 @@ private: // Private Functions of Bot
 
 	void FlushKnownEnemyLocations()
 	{
-		for (int i = 0; i < 30; i++)
+		size_t number_of_positions_to_flush = floor(enemy_unit_locations.size() * 0.9);
+
+		for (size_t i = 0; i < number_of_positions_to_flush; i++)
 		{
 			if (!enemy_unit_locations.empty())
 			{
@@ -689,7 +715,7 @@ int main(int argc, char* argv[]) {
 	Bot bot;
 	coordinator.SetParticipants({
 		CreateParticipant(Race::Terran, &bot),
-		CreateComputer(Race::Zerg)
+		CreateComputer(Race::Terran, Difficulty::Hard)
 		});
 
 	coordinator.LaunchStarcraft();
