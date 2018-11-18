@@ -4,6 +4,7 @@
 #include <queue>
 #include <algorithm>
 #include <math.h>
+#include <random>
 
 #include "bot_examples.h"
 #include "utils.h"
@@ -54,16 +55,20 @@ private: // Bot Global Variables
 	size_t step_count = 0;
 
 	int target_worker_count;
-	double marine_to_maruader_ratio = 2.7;
+	double marine_to_maruader_ratio = 2.7; // Used By Barracks To Determine What To Produce
 
+
+	// Queue of Enemy Sightings - Flushed Periodically
 	std::queue<Point2D> enemy_unit_locations;
+
+	// Constants Inherited
+	// staging_location_ : Point2D location used for rallying created troops
 
 public: // Public Functions Of Bot - On Event Handles Provided By Interface
 
 	virtual void OnGameStart() final {
 		// Call Setup Function of Multiplayer Bot -  Sets up Many Helpful constants
 		MultiplayerBot::OnGameStart();
-		const ObservationInterface* observation = Observation();
 	}
 
 	virtual void OnStep() final {
@@ -91,7 +96,7 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 			ManageIdleArmyUnits();
 		}
 		
-		if (step_count % 800 == 0)
+		if (step_count % 600 == 0)
 		{
 			ManageAttack();
 		}
@@ -112,11 +117,10 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 
 	virtual void OnUnitEnterVision(const sc2::Unit *unit)
 	{
+		// On sighting an enemy, record its position in the locations list.
 		if (unit->alliance == Unit::Enemy)
 		{
 			enemy_unit_locations.push(unit->pos);
-
-			std::cout << enemy_unit_locations.size() << std::endl;
 		}
 	}
 
@@ -124,6 +128,7 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 
 	virtual void OnUnitCreated(const sc2::Unit *unit)
 	{
+		// On Construction Of Combat Units, Rally Them To Staging Location.
 		switch (unit->unit_type.ToType())
 		{
 		case UNIT_TYPEID::TERRAN_MARINE:
@@ -147,7 +152,7 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 	}
 
 	virtual void OnUnitIdle(const Unit* unit) {
-
+		// On Worker Idle, Assign Workers to Mineral Patch
 		switch (unit->unit_type.ToType()) {
 		case UNIT_TYPEID::TERRAN_SCV: {
 			OnWorkerIdle(unit);
@@ -157,7 +162,7 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 			OnWorkerIdle(unit);
 			break;
 		}
-
+		// On Unit Production Idle, Delegate To Factory Handler
 		case UNIT_TYPEID::TERRAN_BARRACKS: {
 			HandleBarracks(unit);
 			break;
@@ -166,6 +171,7 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 			HandleFactory(unit);
 			break;
 		}
+		// Note: Upgrade Building is handle in a manager function.
 
 		default: {
 			break;
@@ -176,11 +182,16 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 
 private: // Private Functions of Bot
 
+	/*
+	Manage Attack
+
+	- Tries to attack move to a location where an enemy was sighted.
+	- Tries only to attack past the six minute mark in steps and when there are a reasonable amount of troops.
+	*/
 	void ManageAttack()
 	{
 		const ObservationInterface* observation = Observation();
-		// Setup - Get Army Units
-
+		// Setup - Get Army Units, new unit types must be added here for them to be included.
 		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
 		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
 		Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
@@ -188,15 +199,32 @@ private: // Private Functions of Bot
 		bool past_six_minutes = step_count > 1200 * 6;
 		bool significant_army = marines.size() + maruaders.size() > 20;
 
+		// Check Attack Preconditions
 		if (past_six_minutes && significant_army)
 		{
-			
+			// Select Attack Location
+			Point2D attack_location;
+
 			if (enemy_unit_locations.size() > 0)
 			{
-				Point2D attack_location = enemy_unit_locations.front();
-				enemy_unit_locations.pop();
+
+				if (enemy_unit_locations.size() == 1)
+				{
+					attack_location = enemy_unit_locations.front();
+				}
+				else
+				{
+					size_t skip = GetRandomInteger(0, enemy_unit_locations.size() - 1);
+
+					for (size_t i = 0; i < skip; i++)
+					{
+						enemy_unit_locations.pop();
+					}
+					attack_location = enemy_unit_locations.front();
+				}
 
 
+				// Order All Idle Units To Attack - new unit types must be added here for them to be included.
 				for (const Unit* unit : marines)
 				{
 					if (unit->orders.empty())
@@ -222,15 +250,22 @@ private: // Private Functions of Bot
 				}
 			}
 		}
-
-
-
 	}
 
+
+	/*
+	Manage Workers
+
+	Handles Economy Related Functions
+
+	- Balances Workers To Minerals / Gas Refineries Via Call To Multiplayer Bot Function
+	- Tries To Call Down MULE when able to.
+	- Tries To Build To Expected (Ideal) Number Of Workers Plus 2 
+	*/
 	void ManageWorkers()
 	{
+		// Balance Workers Against Structures, ie CPs and Refineries 
 		MultiplayerBot::ManageWorkers(UNIT_TYPEID::TERRAN_SCV, ABILITY_ID::HARVEST_GATHER, UNIT_TYPEID::TERRAN_REFINERY);
-		// Above: Balance Workers Against Structures, ie CPs and Refineries 
 
 		// Try To Use The Mule Call Down Whenever Possible On Orbital Command Centers
 		const ObservationInterface* observation = Observation();
@@ -256,10 +291,17 @@ private: // Private Functions of Bot
 
 	}
 
+	/*
+	Manage Upgrades
+	
+	Tries To Build Upgrades For Marines And Maruaders
+
+	- Only Builds Upgrades When Five Minutes Have Past And There Exists A Reasonable Marine Maruader Force
+	*/
 	void ManageUpgrades()
 	{
 		const ObservationInterface* observation = Observation();
-		// Setup - Get Upgrades Buildings
+		// Setup - Get Upgrades Buildings and Unit Counts
 		Units engineering_bays = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ENGINEERINGBAY));
 		Units armories = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ARMORY));
 		Units barracks_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB));
@@ -292,6 +334,15 @@ private: // Private Functions of Bot
 		}
 	}
 
+	/*
+	Build Order
+
+	Tries To Build Buildings Following Heuristics
+
+	- Tries To Build Supply Depots When Near Supply Cap
+	- Tries To Build Other Structures Via Heuristics
+	- Tries To Expand Via Inherited Function
+	*/
 	void BuildOrder() {
 		const ObservationInterface* observation = Observation();
 		// Setup - Get Building Counts
@@ -317,7 +368,7 @@ private: // Private Functions of Bot
 		// Build
 
 
-			// Try Convert Command Center
+		// Try Convert Command Center
 		if (!barracks.empty())
 		{
 			for (const auto& base : bases) {
@@ -340,7 +391,7 @@ private: // Private Functions of Bot
 			}
 		}
 
-		// Try Build Refinery
+		// Try Build Refinery - Do not over build refineries, keep pace with orbital command centers
 		if (barracks.size() >= 2 && orbitals.size() >= 1 && refinerys.size() < orbitals.size())
 		{
 			for (auto u : bases)
@@ -349,13 +400,13 @@ private: // Private Functions of Bot
 			}
 		}
 
-		// Try Build Barracks
+		// Try Build Barracks - Try To Build Barracks Depending On Number Of Bases
 		if (barracks.size() < barracks_count_target && observation->GetMinerals() > 170)
 		{
 			TryBuildStructure(ABILITY_ID::BUILD_BARRACKS);
 		}
 
-		// Try Build Factory
+		// Try Build Factory - Try To Build Factories Only After Having Sufficent Barracks
 		if (factorys.size() < factory_count_target && barracks.size() > 3)
 		{
 			TryBuildStructure(ABILITY_ID::BUILD_FACTORY);
@@ -368,7 +419,7 @@ private: // Private Functions of Bot
 		}
 
 		// Try Build Armory
-		if (armories.size() < armory_count_target && bases.size() > 2 && factorys.size() > 1)
+		if (armories.size() < armory_count_target && bases.size() > 2 && factorys.size() > 0 && engineering_bays.size() > 0)
 		{
 			TryBuildStructure(ABILITY_ID::BUILD_ARMORY);
 		}
@@ -387,6 +438,14 @@ private: // Private Functions of Bot
 		// Moved To Factory On Idle
 	}
 
+	/*
+	Manage Rally Points
+
+	Manages The Staging Point Location Used To Rally Newly Created Troops
+
+	- Tries to place the rally point to the closest expansion to the middle of the map
+	- Shifts units slightly such that they are in front of the base, closer to the map center.
+	*/
 	void ManageRallyPoints()
 	{
 		const ObservationInterface* observation = Observation();
@@ -418,13 +477,24 @@ private: // Private Functions of Bot
 
 	}
 
+	/*
+	Manage Scouts
+
+	Sends Scouts To Scout The Map
+
+	- Tries to scout potentical enemy spawns if the game is relatively early.
+	- Tries to scout random pathable locations if the game has gone on for sometime.
+	- If a game has gone on for some time, we likely have constant contact with the enemy already
+	or their original base may have been destroyed. Hence we use randomness here to help uncover more area.
+
+	*/
 	void ManageScouts()
 	{
 		const ObservationInterface* observation = Observation();
 
-		bool in_first_10_minutes = step_count < 1200 * 10;
+		bool in_first_15_minutes = step_count < 1200 * 15;
 
-		if (in_first_10_minutes)
+		if (in_first_15_minutes)
 		{
 			for (Point2D point : game_info_.enemy_start_locations)
 			{
@@ -455,6 +525,12 @@ private: // Private Functions of Bot
 
 	}
 
+	/*
+	Mange Idle Army Units
+
+	Rallies Army Units To The Staging Location If They Have No Other Orders
+
+	*/
 	void ManageIdleArmyUnits()
 	{
 		const ObservationInterface* observation = Observation();
@@ -488,6 +564,14 @@ private: // Private Functions of Bot
 		}
 	}
 
+	/*
+	Manage Defense
+
+	Uses Idle Units To Defend Bases And Unit Staging Lcoation
+
+	- Checks Each Enemy Unit Location, if close to base or staging attacks using Idle Units.
+
+	*/
 	void ManageDefense()
 	{
 		const ObservationInterface* observation = Observation();
@@ -502,12 +586,12 @@ private: // Private Functions of Bot
 
 		for (const Unit* enemy_unit : enemy_units)
 		{
-			bool close_to_staging_point = Distance2D(enemy_unit->pos, staging_location_) < 15.0f;
+			bool close_to_staging_point = Distance2D(enemy_unit->pos, staging_location_) < 20.0f;
 			bool close_to_base = false;
 
 			for (const Unit* base_unit : bases)
 			{
-				if (Distance2D(enemy_unit->pos, base_unit->pos) < 15.0f)
+				if (Distance2D(enemy_unit->pos, base_unit->pos) < 20.0f)
 				{
 					close_to_base = true;
 				}
@@ -715,7 +799,7 @@ int main(int argc, char* argv[]) {
 	Bot bot;
 	coordinator.SetParticipants({
 		CreateParticipant(Race::Terran, &bot),
-		CreateComputer(Race::Terran, Difficulty::Hard)
+		CreateComputer(Race::Protoss, Difficulty::Hard)
 		});
 
 	coordinator.LaunchStarcraft();
