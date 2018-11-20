@@ -61,6 +61,9 @@ private: // Bot Global Variables
 	// Queue of Enemy Sightings - Flushed Periodically
 	std::queue<Point2D> enemy_unit_locations;
 
+    // Enemy unit quantity threshold for siege mode
+    int siege_threshold = 6;
+
 	// Constants Inherited
 	// staging_location_ : Point2D location used for rallying created troops
 
@@ -85,6 +88,10 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 			ManageWorkers();
 		}
 
+        if (step_count % 19 == 0) {
+            ManageCombatAbilities();
+        }
+
 		if (step_count % 103 == 0)
 		{
 			ManageRallyPoints();
@@ -108,8 +115,6 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 			ManageScouts();
 			ManageAttack();
 		}
-
-
 
 		if (step_count % 2400 == 0)
 		{
@@ -156,33 +161,106 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 	virtual void OnUnitIdle(const Unit* unit) {
 		// On Worker Idle, Assign Workers to Mineral Patch
 		switch (unit->unit_type.ToType()) {
-		case UNIT_TYPEID::TERRAN_SCV: {
-			OnWorkerIdle(unit);
-			break;
-		}
-		case UNIT_TYPEID::TERRAN_MULE: {
-			OnWorkerIdle(unit);
-			break;
-		}
-		// On Unit Production Idle, Delegate To Factory Handler
-		case UNIT_TYPEID::TERRAN_BARRACKS: {
-			HandleBarracks(unit);
-			break;
-		}
-		case UNIT_TYPEID::TERRAN_FACTORY: {
-			HandleFactory(unit);
-			break;
-		}
-		// Note: Upgrade Building is handle in a manager function.
+		    case UNIT_TYPEID::TERRAN_SCV: {
+			    OnWorkerIdle(unit);
+			    break;
+		    }
+		    case UNIT_TYPEID::TERRAN_MULE: {
+			    OnWorkerIdle(unit);
+			    break;
+		    }
+		    // On Unit Production Idle, Delegate To Factory Handler
+		    case UNIT_TYPEID::TERRAN_BARRACKS: {
+			    HandleBarracks(unit);
+			    break;
+		    }
+		    case UNIT_TYPEID::TERRAN_FACTORY: {
+			    HandleFactory(unit);
+			    break;
+		    }
+		    // Note: Upgrade Building is handle in a manager function.
 
-		default: {
-			break;
-		}
+		    default: {
+			    break;
+		    }
 		}
 	}
 
 
 private: // Private Functions of Bot
+
+    /*
+    ManageCombatAbilities
+
+    - Calls all unit combat abilities together for cleanliness
+    */
+    void ManageCombatAbilities()
+    {
+        ManageSiegeOn();
+        ManageSiegeOff();
+        // Other abilities can be added here later (ie Stimpacks, Viking morph)
+    }
+
+    /*
+    ManageSiegeOn
+
+    - Checks each non-sieged tank for a threshold number of enemy units within range
+    - Activates siege mode if the check passes
+    */
+    void ManageSiegeOn()
+    {
+        const ObservationInterface* observation = Observation();
+
+        Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* tank : tanks)
+        {
+            int total = 0;
+
+            // Count enemy units within range
+            for (const Unit* enemy : enemyUnits)
+            {
+                if (Distance2D(tank->pos, enemy->pos) < 13) // Tank range when sieged is 13
+                {
+                    total += 1;
+                }
+            }
+
+            // Siege if there are enough enemy units within range
+            if (total >= siege_threshold)
+            {
+                Actions()->UnitCommand(tank, ABILITY_ID::MORPH_SIEGEMODE);
+            }
+        }
+
+    }
+
+    /*
+    ManageSiegeOff
+
+    - Checks each sieged tank for units within range
+    - Deactivates siege mode if there are none are found
+    */
+    void ManageSiegeOff()
+    {
+        const ObservationInterface* observation = Observation();
+
+        Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANKSIEGED));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* tank : tanks) {
+            //If no enemy units are within range of the sieged tank, unsiege it
+            if (std::none_of(begin(enemyUnits), end(enemyUnits),
+                [&](const Unit* a) {
+                    return Distance2D(a->pos, tank->pos) < 13; // Tank range when sieged is 13
+                })) {
+                Actions()->UnitCommand(tank, ABILITY_ID::MORPH_UNSIEGE);
+            }
+        }
+    }
 
 	/*
 	Manage Attack
@@ -811,8 +889,7 @@ int main(int argc, char* argv[]) {
 	coordinator.LaunchStarcraft();
 	coordinator.StartGame("Ladder/CactusValleyLE.SC2Map");
 
-	while (coordinator.Update()) {
-	}
+	while (coordinator.Update()) {}
 
 	return 0;
 }
