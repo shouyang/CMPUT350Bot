@@ -198,13 +198,14 @@ private: // Private Functions of Bot
     {
         ManageSiegeOn();
         ManageSiegeOff();
-        //Stimpacks?
+        // Other abilities can be added here later (ie Stimpacks, Viking morph)
     }
 
     /*
     ManageSiegeOn
 
-    - Checks each non-sieged tank for siege threshold, activates siege mode if check passes
+    - Checks each non-sieged tank for a threshold number of enemy units within range
+    - Activates siege mode if the check passes
     */
     void ManageSiegeOn()
     {
@@ -218,15 +219,17 @@ private: // Private Functions of Bot
         {
             int total = 0;
 
+            // Count enemy units within range
             for (const Unit* enemy : enemyUnits)
             {
-                if (Distance2D(tank->pos, enemy->pos) < 13)
+                if (Distance2D(tank->pos, enemy->pos) < 13) // Tank range when sieged is 13
                 {
                     total += 1;
                 }
             }
 
-            if (total > siege_threshold)
+            // Siege if there are enough enemy units within range
+            if (total >= siege_threshold)
             {
                 Actions()->UnitCommand(tank, ABILITY_ID::MORPH_SIEGEMODE);
             }
@@ -234,14 +237,11 @@ private: // Private Functions of Bot
 
     }
 
-    bool bar() {
-        return false;
-    }
-
     /*
     ManageSiegeOff
 
-    - Checks each sieged tank for units within range, deactivates siege mode if there are none are found
+    - Checks each sieged tank for units within range
+    - Deactivates siege mode if there are none are found
     */
     void ManageSiegeOff()
     {
@@ -252,9 +252,10 @@ private: // Private Functions of Bot
         Units enemyUnits = observation->GetUnits(Unit::Enemy);
 
         for (const Unit* tank : tanks) {
+            //If no enemy units are within range of the sieged tank, unsiege it
             if (std::none_of(begin(enemyUnits), end(enemyUnits),
                 [&](const Unit* a) {
-                    return Distance2D(a->pos, tank->pos) < 13;
+                    return Distance2D(a->pos, tank->pos) < 13; // Tank range when sieged is 13
                 })) {
                 Actions()->UnitCommand(tank, ABILITY_ID::MORPH_UNSIEGE);
             }
