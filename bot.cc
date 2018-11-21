@@ -62,7 +62,7 @@ private: // Bot Global Variables
 	std::queue<Point2D> enemy_unit_locations;
 
     // Enemy unit quantity threshold for siege mode
-    int siege_threshold = 6;
+    int siege_threshold = 5;
 
 	// Constants Inherited
 	// staging_location_ : Point2D location used for rallying created troops
