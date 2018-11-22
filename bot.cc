@@ -126,7 +126,7 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
     {
         const ObservationInterface* observation = Observation();
 
-        Units bases = observation->GetUnits(Unit::Self, IsUnits(base_types));
+        Units bases = observation->GetUnits(Unit::Self, IsTownHall());
 
         // Check to see if the unit is near any of our bases.
         for (const Unit* base : bases)
@@ -799,15 +799,7 @@ private: // Private Functions of Bot
 		for (const Unit* enemy_unit : enemy_units)
 		{
 			bool close_to_staging_point = Distance2D(enemy_unit->pos, staging_location_) < 20.0f;
-			bool close_to_base = false;
-
-			for (const Unit* base_unit : bases)
-			{
-				if (Distance2D(enemy_unit->pos, base_unit->pos) < 20.0f)
-				{
-					close_to_base = true;
-				}
-			}
+			bool close_to_base =  close_to_base = isCloseToBase(enemy_unit);
 
 			if (close_to_staging_point || close_to_base)
 			{
@@ -1019,7 +1011,6 @@ private: // Private Functions of Bot
 	std::vector<UNIT_TYPEID> siege_tank_types = { UNIT_TYPEID::TERRAN_SIEGETANK, UNIT_TYPEID::TERRAN_SIEGETANKSIEGED };
 	std::vector<UNIT_TYPEID> viking_types = { UNIT_TYPEID::TERRAN_VIKINGASSAULT, UNIT_TYPEID::TERRAN_VIKINGFIGHTER };
 	std::vector<UNIT_TYPEID> hellion_types = { UNIT_TYPEID::TERRAN_HELLION, UNIT_TYPEID::TERRAN_HELLIONTANK };
-    std::vector<UNIT_TYPEID> base_types = { UNIT_TYPEID::TERRAN_COMMANDCENTER, UNIT_TYPEID::TERRAN_ORBITALCOMMAND };
 };
 
 int main(int argc, char* argv[]) {
