@@ -205,7 +205,75 @@ private: // Private Functions of Bot
     {
         ManageSiegeOn();
         ManageSiegeOff();
+        ManageVikingAssaultOn();
+        ManageVikingAssaultOff();
         // Other abilities can be added here later (ie Stimpacks, Viking morph)
+    }
+
+    /*
+    ManageVikingAssaultOn
+
+    - Checks if there are nearby enemy units
+    - Morphs to assault mode if none are flying
+    */
+    void ManageVikingAssaultOn() {
+        const ObservationInterface* observation = Observation();
+
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* viking : vikings)
+        {
+            bool nearby = false;
+            bool nearbyFlying = false;
+
+            // Count enemy units within range
+            for (const Unit* enemy : enemyUnits)
+            {
+                if (Distance2D(viking->pos, enemy->pos) < 11) // Viking vision range is 11
+                {
+                    nearby = true;
+                    if (enemy->is_flying) { nearbyFlying = true; } // Flying enemies nearby, stay in AA mode
+                }
+            }
+            if (nearby && !nearbyFlying) {
+                Actions()->UnitCommand(viking, ABILITY_ID::MORPH_VIKINGASSAULTMODE);
+            }
+        }
+    }
+
+    /*
+    ManageVikingAssaultOff
+
+    - Checks if there are nearby enemy units
+    - If there are none, or there are nearby flying enemies, return to fighter mode
+    */
+    void ManageVikingAssaultOff() {
+        const ObservationInterface* observation = Observation();
+
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGASSAULT));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* viking : vikings)
+        {
+            bool nearby = false;
+            bool nearbyFlying = false;
+
+            // Count enemy units within range
+            for (const Unit* enemy : enemyUnits)
+            {
+                if (Distance2D(viking->pos, enemy->pos) < 11) // Viking vision range is 11
+                {
+                    nearby = true;
+                    if (enemy->is_flying) { nearbyFlying = true; } // Flying enemies nearby, stay in AA mode
+                }
+            }
+            if (!nearby || nearbyFlying) {
+                Actions()->UnitCommand(viking, ABILITY_ID::MORPH_VIKINGFIGHTERMODE);
+            }
+        }
     }
 
     /*
