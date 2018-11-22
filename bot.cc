@@ -147,6 +147,9 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 		case UNIT_TYPEID::TERRAN_SIEGETANK:
 			GoToPoint(unit, staging_location_);
 			break;
+        case UNIT_TYPEID::TERRAN_VIKINGFIGHTER:
+            GoToPoint(unit, staging_location_);
+            break;
 
 		default:
 			break;
@@ -178,6 +181,10 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 			    HandleFactory(unit);
 			    break;
 		    }
+            case UNIT_TYPEID::TERRAN_STARPORT: {
+                HandleStarport(unit);
+                break;
+            }
 		    // Note: Upgrade Building is handle in a manager function.
 
 		    default: {
@@ -198,7 +205,75 @@ private: // Private Functions of Bot
     {
         ManageSiegeOn();
         ManageSiegeOff();
+        ManageVikingAssaultOn();
+        ManageVikingAssaultOff();
         // Other abilities can be added here later (ie Stimpacks, Viking morph)
+    }
+
+    /*
+    ManageVikingAssaultOn
+
+    - Checks if there are nearby enemy units
+    - Morphs to assault mode if none are flying
+    */
+    void ManageVikingAssaultOn() {
+        const ObservationInterface* observation = Observation();
+
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* viking : vikings)
+        {
+            bool nearby = false;
+            bool nearbyFlying = false;
+
+            // Count enemy units within range
+            for (const Unit* enemy : enemyUnits)
+            {
+                if (Distance2D(viking->pos, enemy->pos) < 11) // Viking vision range is 11
+                {
+                    nearby = true;
+                    if (enemy->is_flying) { nearbyFlying = true; } // Flying enemies nearby, stay in AA mode
+                }
+            }
+            if (nearby && !nearbyFlying) {
+                Actions()->UnitCommand(viking, ABILITY_ID::MORPH_VIKINGASSAULTMODE);
+            }
+        }
+    }
+
+    /*
+    ManageVikingAssaultOff
+
+    - Checks if there are nearby enemy units
+    - If there are none, or there are nearby flying enemies, return to fighter mode
+    */
+    void ManageVikingAssaultOff() {
+        const ObservationInterface* observation = Observation();
+
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGASSAULT));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* viking : vikings)
+        {
+            bool nearby = false;
+            bool nearbyFlying = false;
+
+            // Count enemy units within range
+            for (const Unit* enemy : enemyUnits)
+            {
+                if (Distance2D(viking->pos, enemy->pos) < 11) // Viking vision range is 11
+                {
+                    nearby = true;
+                    if (enemy->is_flying) { nearbyFlying = true; } // Flying enemies nearby, stay in AA mode
+                }
+            }
+            if (!nearby || nearbyFlying) {
+                Actions()->UnitCommand(viking, ABILITY_ID::MORPH_VIKINGFIGHTERMODE);
+            }
+        }
     }
 
     /*
@@ -275,6 +350,7 @@ private: // Private Functions of Bot
 		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
 		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
 		Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
 
 		bool past_six_minutes = step_count > 1200 * 6;
 		bool significant_army = marines.size() + maruaders.size() > 20;
@@ -328,6 +404,14 @@ private: // Private Functions of Bot
 						GoToPoint(unit, attack_location);
 					}
 				}
+
+                for (const Unit* unit : vikings)
+                {
+                    if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
+                    {
+                        GoToPoint(unit, attack_location);
+                    }
+                }
 			}
 		}
 	}
@@ -367,7 +451,6 @@ private: // Private Functions of Bot
 			TryBuildUnit(ABILITY_ID::TRAIN_SCV, UNIT_TYPEID::TERRAN_COMMANDCENTER);
 			TryBuildUnit(ABILITY_ID::TRAIN_SCV, UNIT_TYPEID::TERRAN_ORBITALCOMMAND);
 		}
-
 
 	}
 
@@ -444,6 +527,7 @@ private: // Private Functions of Bot
 		size_t factory_count_target = 1;
 		size_t engineering_bay_count_target = 1;
 		size_t armory_count_target = 1;
+        size_t starport_count_target = 1;
 
 		// Build
 
@@ -491,6 +575,12 @@ private: // Private Functions of Bot
 		{
 			TryBuildStructure(ABILITY_ID::BUILD_FACTORY);
 		}
+
+        // Try Build Starport - Try To Build Starports Only After Having Sufficent Factories
+        if (starports.size() < starport_count_target && factorys.size() > 0)
+        {
+            TryBuildStructure(ABILITY_ID::BUILD_STARPORT);
+        }
 
 		// Try Build Engineering Bay
 		if (engineering_bays.size() < engineering_bay_count_target && barracks.size() > 3)
@@ -618,6 +708,7 @@ private: // Private Functions of Bot
 		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
 		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
 		Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
 
 		for (const Unit* unit : marines)
 		{
@@ -642,6 +733,14 @@ private: // Private Functions of Bot
 				GoToPoint(unit, staging_location_);
 			}
 		}
+
+        for (const Unit* unit : vikings)
+        {
+            if (unit->orders.empty())
+            {
+                GoToPoint(unit, staging_location_);
+            }
+        }
 	}
 
 	/*
@@ -661,6 +760,7 @@ private: // Private Functions of Bot
 		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
 		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
 		Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
 
 		Units enemy_units = observation->GetUnits(Unit::Enemy);
 
@@ -702,9 +802,18 @@ private: // Private Functions of Bot
 						GoToPoint(army_unit, enemy_unit->pos);
 					}
 				}
+
+                for (const Unit* army_unit : vikings)
+                {
+                    if (army_unit->orders.empty())
+                    {
+                        GoToPoint(army_unit, enemy_unit->pos);
+                    }
+                }
 			}
 		}
 	}
+
 	// Per Factory Functions
 	void HandleBarracks(const Unit* unit)
 	{
@@ -742,6 +851,10 @@ private: // Private Functions of Bot
 		Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_SIEGETANK);
 	}
 
+    void HandleStarport(const Unit* unit)
+    {
+        Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_VIKINGFIGHTER);
+    }
 
 	// Per Unit Functions
 
