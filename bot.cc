@@ -122,10 +122,27 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 		}
 	}
 
+    bool isCloseToBase(const Unit* unit)
+    {
+        const ObservationInterface* observation = Observation();
+
+        Units bases = observation->GetUnits(Unit::Self, IsUnits(base_types));
+
+        // Check to see if the unit is near any of our bases.
+        for (const Unit* base : bases)
+        {
+            if (Distance2D(unit->pos, base->pos) < 25) // Temporary value until something more accurate can be found.
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
 	virtual void OnUnitEnterVision(const sc2::Unit *unit)
 	{
 		// On sighting an enemy, record its position in the locations list.
-		if (unit->alliance == Unit::Enemy)
+		if (unit->alliance == Unit::Enemy && !isCloseToBase(unit))
 		{
 			enemy_unit_locations.push(unit->pos);
 		}
@@ -158,7 +175,11 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 
 	virtual void OnUnitDestroyed(const sc2::Unit *unit)
 	{
-
+        // Unit could have been killed by something outside its LOS, consider this a hostile location.
+        if (!isCloseToBase(unit))
+        {
+            enemy_unit_locations.push(unit->pos);
+        }
 	}
 
 	virtual void OnUnitIdle(const Unit* unit) {
@@ -361,24 +382,35 @@ private: // Private Functions of Bot
 			// Select Attack Location
 			Point2D attack_location;
 
-			if (enemy_unit_locations.size() > 0)
+            // Prioritze enemy structures;
+            Units enemy_units = observation->GetUnits(Unit::Enemy);
+            bool found_structure = false;
+            for (auto unit : enemy_units) {
+                if (unit->display_type == Unit::DisplayType::Snapshot) // Structures show up in FOW as snapshots
+                {
+                    attack_location = unit->pos;
+                    found_structure = true;
+                }
+            }
+
+			if (enemy_unit_locations.size() > 0 || found_structure)
 			{
+                if (!found_structure) {
+                    if (enemy_unit_locations.size() == 1)
+                    {
+                        attack_location = enemy_unit_locations.front();
+                    }
+                    else
+                    {
+                        size_t skip = GetRandomInteger(0, enemy_unit_locations.size() - 1);
 
-				if (enemy_unit_locations.size() == 1)
-				{
-					attack_location = enemy_unit_locations.front();
-				}
-				else
-				{
-					size_t skip = GetRandomInteger(0, enemy_unit_locations.size() - 1);
-
-					for (size_t i = 0; i < skip; i++)
-					{
-						enemy_unit_locations.pop();
-					}
-					attack_location = enemy_unit_locations.front();
-				}
-
+                        for (size_t i = 0; i < skip; i++)
+                        {
+                            enemy_unit_locations.pop();
+                        }
+                        attack_location = enemy_unit_locations.front();
+                    }
+                }
 
 				// Order All Idle Units To Attack - new unit types must be added here for them to be included.
 				for (const Unit* unit : marines)
@@ -405,7 +437,7 @@ private: // Private Functions of Bot
 					}
 				}
 
-                for (const Unit* unit : vikings)
+                for (const Unit* unit : vikings) // TODO force vikings to keep pace with ground units.
                 {
                     if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
                     {
@@ -987,6 +1019,7 @@ private: // Private Functions of Bot
 	std::vector<UNIT_TYPEID> siege_tank_types = { UNIT_TYPEID::TERRAN_SIEGETANK, UNIT_TYPEID::TERRAN_SIEGETANKSIEGED };
 	std::vector<UNIT_TYPEID> viking_types = { UNIT_TYPEID::TERRAN_VIKINGASSAULT, UNIT_TYPEID::TERRAN_VIKINGFIGHTER };
 	std::vector<UNIT_TYPEID> hellion_types = { UNIT_TYPEID::TERRAN_HELLION, UNIT_TYPEID::TERRAN_HELLIONTANK };
+    std::vector<UNIT_TYPEID> base_types = { UNIT_TYPEID::TERRAN_COMMANDCENTER, UNIT_TYPEID::TERRAN_ORBITALCOMMAND };
 };
 
 int main(int argc, char* argv[]) {
