@@ -1,455 +1,1032 @@
 #include <sc2api/sc2_api.h>
-#include "bot_examples.h"
 
 #include <iostream>
 #include <queue>
+#include <algorithm>
+#include <math.h>
+#include <random>
 
-#include <vector>
-#include <unordered_map>
+#include "bot_examples.h"
+#include "utils.h"
 
 using namespace sc2;
 
 
 // These Two Structs Were Needed From "bot_examples.cc"
 struct IsTownHall {
-    bool operator()(const Unit& unit) {
-        switch (unit.unit_type.ToType()) {
-        case UNIT_TYPEID::ZERG_HATCHERY: return true;
-        case UNIT_TYPEID::ZERG_LAIR: return true;
-        case UNIT_TYPEID::ZERG_HIVE: return true;
-        case UNIT_TYPEID::TERRAN_COMMANDCENTER: return true;
-        case UNIT_TYPEID::TERRAN_ORBITALCOMMAND: return true;
-        case UNIT_TYPEID::TERRAN_ORBITALCOMMANDFLYING: return true;
-        case UNIT_TYPEID::TERRAN_PLANETARYFORTRESS: return true;
-        case UNIT_TYPEID::PROTOSS_NEXUS: return true;
-        default: return false;
-        }
-    }
+	bool operator()(const Unit& unit) {
+		switch (unit.unit_type.ToType()) {
+		case UNIT_TYPEID::ZERG_HATCHERY: return true;
+		case UNIT_TYPEID::ZERG_LAIR: return true;
+		case UNIT_TYPEID::ZERG_HIVE: return true;
+		case UNIT_TYPEID::TERRAN_COMMANDCENTER: return true;
+		case UNIT_TYPEID::TERRAN_ORBITALCOMMAND: return true;
+		case UNIT_TYPEID::TERRAN_ORBITALCOMMANDFLYING: return true;
+		case UNIT_TYPEID::TERRAN_PLANETARYFORTRESS: return true;
+		case UNIT_TYPEID::PROTOSS_NEXUS: return true;
+		default: return false;
+		}
+	}
 };
 
 struct IsStructure {
-    IsStructure(const ObservationInterface* obs) : observation_(obs) {};
+	IsStructure(const ObservationInterface* obs) : observation_(obs) {};
 
-    bool operator()(const Unit& unit) {
-        auto& attributes = observation_->GetUnitTypeData().at(unit.unit_type).attributes;
-        bool is_structure = false;
-        for (const auto& attribute : attributes) {
-            if (attribute == Attribute::Structure) {
-                is_structure = true;
-            }
-        }
-        return is_structure;
-    }
+	bool operator()(const Unit& unit) {
+		auto& attributes = observation_->GetUnitTypeData().at(unit.unit_type).attributes;
+		bool is_structure = false;
+		for (const auto& attribute : attributes) {
+			if (attribute == Attribute::Structure) {
+				is_structure = true;
+			}
+		}
+		return is_structure;
+	}
 
-    const ObservationInterface* observation_;
+	const ObservationInterface* observation_;
 };
 
 
 class Bot : public MultiplayerBot {
 
 private: // Bot Global Variables
-    size_t step_count = 0;
 
-    Point2D spawn;
-    Point2D enemy_spawn; // Find via scouting ( Observation()->GetGameInfo().enemy_start_locations returns a std::vector<Point2D> )
+	// Note: ~1200 steps == 1 in-game minute
+	size_t step_count = 0;
 
-    int target_worker_count;
+	int target_worker_count;
+	double marine_to_maruader_ratio = 2.7; // Used By Barracks To Determine What To Produce
 
-    // Defines our target wave composition
-    std::unordered_map<UNIT_TYPEID, int> WAVECOMP = {
-        { UNIT_TYPEID::TERRAN_MARINE, 10 }
-    };
 
-    // Holds vectors of unit pointers. Each vector represents one wave
-    std::vector<std::vector <const Unit*>> waves;
+	// Queue of Enemy Sightings - Flushed Periodically
+	std::queue<Point2D> enemy_unit_locations;
 
-    // Temp
-    // Tag identifying our chosen scouting SCV
-    Tag scout = 0;
+    // Enemy unit quantity threshold for siege mode
+    int siege_threshold = 5;
 
-public:
-    virtual void OnGameStart() final {
-        MultiplayerBot::OnGameStart();
+	// Constants Inherited
+	// staging_location_ : Point2D location used for rallying created troops
 
-        // Game etiquette
-        //Actions()->SendChat("glhf");
+public: // Public Functions Of Bot - On Event Handles Provided By Interface
 
-        // Set spawn
-        const ObservationInterface* observation = Observation();
-        Point3D temp = observation->GetStartLocation();
-        spawn = Point2D(temp.x, temp.y);
+	virtual void OnGameStart() final {
+		// Call Setup Function of Multiplayer Bot -  Sets up Many Helpful constants
+		MultiplayerBot::OnGameStart();
+	}
 
-        // waves must be initialized with an empty wave
-        std::vector<const Unit*> w;
-        waves.push_back(w);
-    }
+	virtual void OnStep() final {
+		step_count++;
+		const ObservationInterface* observation = Observation();
 
-    virtual void OnStep() final {
-        step_count++;
 
-        handleWaves();
+		// Try To Avoid Doing Too Much Per Step Here
+		// Using Prime Numbers Between 0-1200 (1 In-game minute) to offload some work..
 
-        BuildOrder();
+		if (step_count % 3 == 0)
+		{
+			BuildOrder();
+			ManageWorkers();
+		}
 
-        ManageWorkers();
-    }
+        if (step_count % 19 == 0) {
+            ManageCombatAbilities();
+        }
 
-    virtual void OnUnitEnterVision(const sc2::Unit *unit)
+		if (step_count % 103 == 0)
+		{
+			ManageRallyPoints();
+			ManageDefense();
+		}
+
+		if (step_count % 367 == 0)
+		{
+			ManageIdleArmyUnits();
+		}
+		
+
+		if (step_count % 891 == 0)
+		{
+			ManageUpgrades();
+		}
+
+
+		if (step_count % 1200 == 0)
+		{
+			ManageScouts();
+			ManageAttack();
+		}
+
+		if (step_count % 2400 == 0)
+		{
+			FlushKnownEnemyLocations();
+		}
+	}
+
+    bool isCloseToBase(const Unit* unit)
     {
-
-    }
-
-    virtual void OnBuildingConstructionComplete(const sc2::Unit* unit)
-    {
-
-    }
-
-    virtual void OnUnitCreated(const sc2::Unit *unit)
-    {
-        switch (unit->unit_type.ToType()) {
-        case UNIT_TYPEID::TERRAN_SCV: {
-            if (scout == 0) {
-                scout = unit->tag;
-            }
-            break;
-        }
-        case UNIT_TYPEID::TERRAN_MARINE: {
-            addToWave(unit);
-            break;
-        }
-        }
-    }
-
-    virtual void OnUnitDestroyed(const sc2::Unit *unit)
-    {
-
-    }
-
-    virtual void OnUnitIdle(const Unit* unit) {
-
-        switch (unit->unit_type.ToType()) {
-        case UNIT_TYPEID::TERRAN_SCV: {
-
-            if (unit->tag == scout) {
-                ScoutWithUnit(unit, Observation());
-                break;
-            }
-
-            const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
-            if (!mineral_target) {
-                break;
-            }
-            Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
-            break;
-        }
-        case UNIT_TYPEID::TERRAN_MULE: {
-            const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
-            if (!mineral_target) {
-                break;
-            }
-            Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
-            break;
-        }
-        case UNIT_TYPEID::TERRAN_BARRACKS: {
-
-            // TODO: Add Actual Logic on Deciding Which Addon To Build
-            TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_BARRACKS, unit->tag);
-
-            // TODO: Add Actual Logic on Deciding Which Unit To Build
-            Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
-
-            break;
-        }
-        case UNIT_TYPEID::TERRAN_MARINE: {
-            const GameInfo& game_info = Observation()->GetGameInfo();
-
-            Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Point2D(staging_location_.x, staging_location_.y));
-
-            break;
-        }
-        default: {
-            break;
-        }
-        }
-    }
-
-
-private:
-    // Returns the number of the given unit type in the given wave
-    int countTypeInWave(UNIT_TYPEID uid, std::vector<const Unit*> wave) {
-        int count = 0;
-        for (int i = 0; i < wave.size(); ++i) {
-            if (wave[i]->unit_type.ToType() == uid) {
-                ++count;
-            }
-        }
-        return count;
-    }
-
-    void addToWave(const Unit* u) {
-        if (countTypeInWave(u->unit_type.ToType(), waves[waves.size() - 1]) < WAVECOMP[u->unit_type.ToType()]) {
-            // Can fit more of this unit type in this wave
-            waves[waves.size() - 1].push_back(u);
-        }
-        else {
-            // No empty spots found, create new wave and add.
-            std::vector<const Unit*> w;
-            waves.push_back(w);
-            waves[waves.size() - 1].push_back(u);
-        }
-        //std::cout << "Added " << UnitTypeToName(u->unit_type.ToType()) << " to wave " << waves.size() - 1 << std::endl;
-    }
-
-    // Returns true iff the given wave has a complete composition
-    bool waveReady(std::vector<const Unit*> wave) {
-        for (std::pair<UNIT_TYPEID, int> type : WAVECOMP) {
-            if (countTypeInWave(type.first, wave) < type.second) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // If any given wave has a complete composition, order it to attack
-    void handleWaves() {
-        const ObservationInterface* observation = Observation();
-        for (auto wave : waves) {
-            if (waveReady(wave)) {
-                for (auto unit : wave) {
-                    // For now this just picks a random possible enemy location, later we'll scout for the actual spawn.
-                    Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, Observation()->GetGameInfo().enemy_start_locations[0]);
-                }
-                // Can we remove the wave after issuing this command?
-            }
-        }
-    }
-
-    size_t CountUnitType(UNIT_TYPEID unit_type) {
-        return Observation()->GetUnits(Unit::Alliance::Self, IsUnit(unit_type)).size();
-    }
-
-    bool TryBuildStructure(ABILITY_ID ability_type_for_structure, UNIT_TYPEID unit_type = UNIT_TYPEID::TERRAN_SCV) {
         const ObservationInterface* observation = Observation();
 
-        // If a unit already is building a supply structure of this type, do nothing.
-        // Also get an scv to build the structure.
-        const Unit* unit_to_build = nullptr;
-        Units units = observation->GetUnits(Unit::Alliance::Self);
-        for (const auto& unit : units) {
-            for (const auto& order : unit->orders) {
-                if (order.ability_id == ability_type_for_structure) {
-                    continue;
-                }
+        Units bases = observation->GetUnits(Unit::Self, IsTownHall());
+
+        // Check to see if the unit is near any of our bases.
+        for (const Unit* base : bases)
+        {
+            if (Distance2D(unit->pos, base->pos) < 25) // Temporary value until something more accurate can be found.
+            {
+                return true;
             }
-
-            if (unit->unit_type == unit_type) {
-                unit_to_build = unit;
-            }
-        }
-
-        float rx = GetRandomScalar();
-        float ry = GetRandomScalar();
-
-        Actions()->UnitCommand(unit_to_build,
-            ability_type_for_structure,
-            Point2D(unit_to_build->pos.x + rx * 10.0f, unit_to_build->pos.y + ry * 10.0f));
-
-        return true;
-    }
-
-    bool TryBuildAddOn(AbilityID ability_type_for_structure, Tag base_structure) {
-        float rx = GetRandomScalar();
-        float ry = GetRandomScalar();
-        const Unit* unit = Observation()->GetUnit(base_structure);
-
-        if (unit->build_progress != 1) {
-            return false;
-        }
-
-        Point2D build_location = Point2D(unit->pos.x + rx * 15, unit->pos.y + ry * 15);
-
-        Units units = Observation()->GetUnits(Unit::Self, IsStructure(Observation()));
-
-        if (Query()->Placement(ability_type_for_structure, unit->pos, unit)) {
-            Actions()->UnitCommand(unit, ability_type_for_structure);
-            return true;
-        }
-
-        float distance = std::numeric_limits<float>::max();
-        for (const auto& u : units) {
-            float d = Distance2D(u->pos, build_location);
-            if (d < distance) {
-                distance = d;
-            }
-        }
-        if (distance < 6) {
-            return false;
-        }
-
-        if (Query()->Placement(ability_type_for_structure, build_location, unit)) {
-            Actions()->UnitCommand(unit, ability_type_for_structure, build_location);
-            return true;
         }
         return false;
-
     }
 
-    void ManageWorkers()
+	virtual void OnUnitEnterVision(const sc2::Unit *unit)
+	{
+		// On sighting an enemy, record its position in the locations list.
+		if (unit->alliance == Unit::Enemy && !isCloseToBase(unit))
+		{
+			enemy_unit_locations.push(unit->pos);
+		}
+	}
+
+	virtual void OnBuildingConstructionComplete(const sc2::Unit* unit) {}
+
+	virtual void OnUnitCreated(const sc2::Unit *unit)
+	{
+		// On Construction Of Combat Units, Rally Them To Staging Location.
+		switch (unit->unit_type.ToType())
+		{
+		case UNIT_TYPEID::TERRAN_MARINE:
+			GoToPoint(unit, staging_location_);
+			break;
+		case UNIT_TYPEID::TERRAN_MARAUDER:
+			GoToPoint(unit, staging_location_);
+			break;
+		case UNIT_TYPEID::TERRAN_SIEGETANK:
+			GoToPoint(unit, staging_location_);
+			break;
+        case UNIT_TYPEID::TERRAN_VIKINGFIGHTER:
+            GoToPoint(unit, staging_location_);
+            break;
+
+		default:
+			break;
+		}
+	}
+
+	virtual void OnUnitDestroyed(const sc2::Unit *unit)
+	{
+        // Unit could have been killed by something outside its LOS, consider this a hostile location.
+        if (!isCloseToBase(unit))
+        {
+            enemy_unit_locations.push(unit->pos);
+        }
+	}
+
+	virtual void OnUnitIdle(const Unit* unit) {
+		// On Worker Idle, Assign Workers to Mineral Patch
+		switch (unit->unit_type.ToType()) {
+		    case UNIT_TYPEID::TERRAN_SCV: {
+			    OnWorkerIdle(unit);
+			    break;
+		    }
+		    case UNIT_TYPEID::TERRAN_MULE: {
+			    OnWorkerIdle(unit);
+			    break;
+		    }
+		    // On Unit Production Idle, Delegate To Factory Handler
+		    case UNIT_TYPEID::TERRAN_BARRACKS: {
+			    HandleBarracks(unit);
+			    break;
+		    }
+		    case UNIT_TYPEID::TERRAN_FACTORY: {
+			    HandleFactory(unit);
+			    break;
+		    }
+            case UNIT_TYPEID::TERRAN_STARPORT: {
+                HandleStarport(unit);
+                break;
+            }
+		    // Note: Upgrade Building is handle in a manager function.
+
+		    default: {
+			    break;
+		    }
+		}
+	}
+
+
+private: // Private Functions of Bot
+
+    /*
+    ManageCombatAbilities
+
+    - Calls all unit combat abilities together for cleanliness
+    */
+    void ManageCombatAbilities()
     {
-        MultiplayerBot::ManageWorkers(UNIT_TYPEID::TERRAN_SCV, ABILITY_ID::HARVEST_GATHER, UNIT_TYPEID::TERRAN_REFINERY);
-        // Above: Balance Workers Against Structures, ie CPs and Refineries 
-
-        // Try To Use The Mule Call Down Whenever Possible On Orbital Command Centers
-        const ObservationInterface* observation = Observation();
-        Units orbitals = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ORBITALCOMMAND));
-        for (auto &unit : orbitals)
-        {
-            if (unit->energy > 50)
-            {
-                float rx = GetRandomScalar();
-                float ry = GetRandomScalar();
-
-                Actions()->UnitCommand(unit, ABILITY_ID::EFFECT_CALLDOWNMULE, Point2D(unit->pos.x + rx * 2, unit->pos.y + ry * 2));
-            }
-        }
-
-        // Try to Build Up To The Optimal Number of Workers Plus 2 For Construction
-        target_worker_count = GetExpectedWorkers(UNIT_TYPEID::TERRAN_REFINERY) + 2;
-        if (CountUnitType(UNIT_TYPEID::TERRAN_SCV) < target_worker_count) {
-            TryBuildUnit(ABILITY_ID::TRAIN_SCV, UNIT_TYPEID::TERRAN_COMMANDCENTER);
-            TryBuildUnit(ABILITY_ID::TRAIN_SCV, UNIT_TYPEID::TERRAN_ORBITALCOMMAND);
-        }
-
-
+        ManageSiegeOn();
+        ManageSiegeOff();
+        ManageVikingAssaultOn();
+        ManageVikingAssaultOff();
+        // Other abilities can be added here later (ie Stimpacks, Viking morph)
     }
 
-    void BuildOrder() {
+    /*
+    ManageVikingAssaultOn
+
+    - Checks if there are nearby enemy units
+    - Morphs to assault mode if none are flying
+    */
+    void ManageVikingAssaultOn() {
         const ObservationInterface* observation = Observation();
-        // Setup - Get Building Counts
-        Units bases = observation->GetUnits(Unit::Self, IsTownHall());
-        Units barracks = observation->GetUnits(Unit::Self, IsUnits(barrack_types));
-        Units factorys = observation->GetUnits(Unit::Self, IsUnits(factory_types));
-        Units starports = observation->GetUnits(Unit::Self, IsUnits(starport_types));
-        Units barracks_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB));
-        Units factorys_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_FACTORYTECHLAB));
-        Units starports_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_STARPORTTECHLAB));
-        Units supply_depots = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SUPPLYDEPOT));
-        Units refinerys = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_REFINERY));
-        Units engineering_bays = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ENGINEERINGBAY));
-        Units orbitals = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ORBITALCOMMAND));
 
-        // Setup - Get Building Count Targets
-        size_t barracks_count_target = std::min<size_t>(2 * bases.size(), 8);
-        size_t factory_count_target = 1;
-        size_t engineering_bay_count_target = 1;
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
 
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
 
-        // Build
-
-
-        // Try Convert Command Center
-        if (!barracks.empty())
+        for (const Unit* viking : vikings)
         {
-            for (const auto& base : bases) {
-                if (base->unit_type == UNIT_TYPEID::TERRAN_COMMANDCENTER && observation->GetMinerals() > 150) {
-                    Actions()->UnitCommand(base, ABILITY_ID::MORPH_ORBITALCOMMAND);
+            bool nearby = false;
+            bool nearbyFlying = false;
+
+            // Count enemy units within range
+            for (const Unit* enemy : enemyUnits)
+            {
+                if (Distance2D(viking->pos, enemy->pos) < 11) // Viking vision range is 11
+                {
+                    nearby = true;
+                    if (enemy->is_flying) { nearbyFlying = true; } // Flying enemies nearby, stay in AA mode
                 }
             }
-        }
-
-        // Try Build Depot - Calculate our own total supply cap here to account for buildings in progress..
-        size_t FoodCapInProgress = supply_depots.size() * 8 + bases.size() * 15;
-
-        if (observation->GetFoodUsed() >= FoodCapInProgress - 3)
-        {
-            TryBuildStructure(ABILITY_ID::BUILD_SUPPLYDEPOT);
-        }
-
-        // Try Build Refinery
-        if (barracks.size() >= 2 && orbitals.size() >= 1 && refinerys.size() < orbitals.size())
-        {
-            for (auto u : bases)
-            {
-                TryBuildGas(ABILITY_ID::BUILD_REFINERY, UNIT_TYPEID::TERRAN_SCV, Point2D(u->pos.x, u->pos.y));
+            if (nearby && !nearbyFlying) {
+                Actions()->UnitCommand(viking, ABILITY_ID::MORPH_VIKINGASSAULTMODE);
             }
         }
-
-        // Try Build Barracks
-        if (barracks.size() < barracks_count_target && observation->GetMinerals() > 170)
-        {
-            TryBuildStructure(ABILITY_ID::BUILD_BARRACKS);
-        }
-
-        // Try Build Factory
-        if (factorys.size() < factory_count_target && barracks.size() > 3)
-        {
-            TryBuildStructure(ABILITY_ID::BUILD_FACTORY);
-        }
-
-        // Try Build Engineering Bay
-        if (engineering_bays.size() < engineering_bay_count_target && barracks.size() > 3)
-        {
-            TryBuildStructure(ABILITY_ID::BUILD_ENGINEERINGBAY);
-        }
-
-        // Try Expand
-        if (barracks.size() >= 2 && bases.size() <= 2 && observation->GetMinerals() > 400 * bases.size())
-        {
-            TryExpand(ABILITY_ID::BUILD_COMMANDCENTER, UNIT_TYPEID::TERRAN_SCV);
-        }
-
-
-        // Try Build Barracks Addons
-        // TODO - May be moved to Barracks IDLE
-
-        // Try Build Factory Addons
-        // TODO - May be moved to Barracks IDLE
     }
 
-    // Helper Functions
-    const Unit* FindNearestMineralPatch(const Point2D& start) {
-        Units units = Observation()->GetUnits(Unit::Alliance::Neutral);
-        float distance = std::numeric_limits<float>::max();
-        const Unit* target = nullptr;
-        for (const auto& u : units) {
-            if (u->unit_type == UNIT_TYPEID::NEUTRAL_MINERALFIELD) {
-                float d = DistanceSquared2D(u->pos, start);
-                if (d < distance) {
-                    distance = d;
-                    target = u;
+    /*
+    ManageVikingAssaultOff
+
+    - Checks if there are nearby enemy units
+    - If there are none, or there are nearby flying enemies, return to fighter mode
+    */
+    void ManageVikingAssaultOff() {
+        const ObservationInterface* observation = Observation();
+
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGASSAULT));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* viking : vikings)
+        {
+            bool nearby = false;
+            bool nearbyFlying = false;
+
+            // Count enemy units within range
+            for (const Unit* enemy : enemyUnits)
+            {
+                if (Distance2D(viking->pos, enemy->pos) < 11) // Viking vision range is 11
+                {
+                    nearby = true;
+                    if (enemy->is_flying) { nearbyFlying = true; } // Flying enemies nearby, stay in AA mode
                 }
             }
+            if (!nearby || nearbyFlying) {
+                Actions()->UnitCommand(viking, ABILITY_ID::MORPH_VIKINGFIGHTERMODE);
+            }
         }
-        return target;
     }
 
-    // Constant Types From Example Terran Bot
-    std::vector<UNIT_TYPEID> barrack_types = { UNIT_TYPEID::TERRAN_BARRACKSFLYING, UNIT_TYPEID::TERRAN_BARRACKS };
-    std::vector<UNIT_TYPEID> factory_types = { UNIT_TYPEID::TERRAN_FACTORYFLYING, UNIT_TYPEID::TERRAN_FACTORY };
-    std::vector<UNIT_TYPEID> starport_types = { UNIT_TYPEID::TERRAN_STARPORTFLYING, UNIT_TYPEID::TERRAN_STARPORT };
-    std::vector<UNIT_TYPEID> supply_depot_types = { UNIT_TYPEID::TERRAN_SUPPLYDEPOT, UNIT_TYPEID::TERRAN_SUPPLYDEPOTLOWERED };
-    std::vector<UNIT_TYPEID> bio_types = { UNIT_TYPEID::TERRAN_MARINE, UNIT_TYPEID::TERRAN_MARAUDER, UNIT_TYPEID::TERRAN_GHOST, UNIT_TYPEID::TERRAN_REAPER /*reaper*/ };
-    std::vector<UNIT_TYPEID> widow_mine_types = { UNIT_TYPEID::TERRAN_WIDOWMINE, UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED };
-    std::vector<UNIT_TYPEID> siege_tank_types = { UNIT_TYPEID::TERRAN_SIEGETANK, UNIT_TYPEID::TERRAN_SIEGETANKSIEGED };
-    std::vector<UNIT_TYPEID> viking_types = { UNIT_TYPEID::TERRAN_VIKINGASSAULT, UNIT_TYPEID::TERRAN_VIKINGFIGHTER };
-    std::vector<UNIT_TYPEID> hellion_types = { UNIT_TYPEID::TERRAN_HELLION, UNIT_TYPEID::TERRAN_HELLIONTANK };
+    /*
+    ManageSiegeOn
+
+    - Checks each non-sieged tank for a threshold number of enemy units within range
+    - Activates siege mode if the check passes
+    */
+    void ManageSiegeOn()
+    {
+        const ObservationInterface* observation = Observation();
+
+        Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* tank : tanks)
+        {
+            int total = 0;
+
+            // Count enemy units within range
+            for (const Unit* enemy : enemyUnits)
+            {
+                if (Distance2D(tank->pos, enemy->pos) < 13) // Tank range when sieged is 13
+                {
+                    total += 1;
+                }
+            }
+
+            // Siege if there are enough enemy units within range
+            if (total >= siege_threshold)
+            {
+                Actions()->UnitCommand(tank, ABILITY_ID::MORPH_SIEGEMODE);
+            }
+        }
+
+    }
+
+    /*
+    ManageSiegeOff
+
+    - Checks each sieged tank for units within range
+    - Deactivates siege mode if there are none are found
+    */
+    void ManageSiegeOff()
+    {
+        const ObservationInterface* observation = Observation();
+
+        Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANKSIEGED));
+
+        Units enemyUnits = observation->GetUnits(Unit::Enemy);
+
+        for (const Unit* tank : tanks) {
+            //If no enemy units are within range of the sieged tank, unsiege it
+            if (std::none_of(begin(enemyUnits), end(enemyUnits),
+                [&](const Unit* a) {
+                    return Distance2D(a->pos, tank->pos) < 13; // Tank range when sieged is 13
+                })) {
+                Actions()->UnitCommand(tank, ABILITY_ID::MORPH_UNSIEGE);
+            }
+        }
+    }
+
+	/*
+	Manage Attack
+
+	- Tries to attack move to a location where an enemy was sighted.
+	- Tries only to attack past the six minute mark in steps and when there are a reasonable amount of troops.
+	*/
+	void ManageAttack()
+	{
+		const ObservationInterface* observation = Observation();
+		// Setup - Get Army Units, new unit types must be added here for them to be included.
+		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
+		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
+		Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
+
+		bool past_six_minutes = step_count > 1200 * 6;
+		bool significant_army = marines.size() + maruaders.size() > 25;
+
+		// Check Attack Preconditions
+		if (past_six_minutes && significant_army)
+		{
+			// Select Attack Location
+			Point2D attack_location;
+
+            // Prioritze enemy structures;
+            Units enemy_units = observation->GetUnits(Unit::Enemy);
+            bool found_structure = false;
+            for (auto unit : enemy_units) {
+                if (unit->display_type == Unit::DisplayType::Snapshot) // Structures show up in FOW as snapshots
+                {
+                    attack_location = unit->pos;
+                    found_structure = true;
+                }
+            }
+
+			if (enemy_unit_locations.size() > 0 || found_structure)
+			{
+                if (!found_structure) {
+                    if (enemy_unit_locations.size() == 1)
+                    {
+                        attack_location = enemy_unit_locations.front();
+                    }
+                    else
+                    {
+                        size_t skip = GetRandomInteger(0, enemy_unit_locations.size() - 1);
+
+                        for (size_t i = 0; i < skip; i++)
+                        {
+                            enemy_unit_locations.pop();
+                        }
+                        attack_location = enemy_unit_locations.front();
+                    }
+                }
+
+				// Order All Idle Units To Attack - new unit types must be added here for them to be included.
+				for (const Unit* unit : marines)
+				{
+					if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
+					{
+						GoToPoint(unit, attack_location);
+					}
+				}
+
+				for (const Unit* unit : maruaders)
+				{
+					if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
+					{
+						GoToPoint(unit, attack_location);
+					}
+				}
+
+				for (const Unit* unit : tanks)
+				{
+					if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
+					{
+						GoToPoint(unit, attack_location);
+					}
+				}
+
+                for (const Unit* unit : vikings) // TODO force vikings to keep pace with ground units.
+                {
+                    if (unit->orders.empty() || Distance2D(unit->pos, staging_location_) < 15)
+                    {
+                        GoToPoint(unit, attack_location);
+                    }
+                }
+			}
+		}
+	}
+
+
+	/*
+	Manage Workers
+
+	Handles Economy Related Functions
+
+	- Balances Workers To Minerals / Gas Refineries Via Call To Multiplayer Bot Function
+	- Tries To Call Down MULE when able to.
+	- Tries To Build To Expected (Ideal) Number Of Workers Plus 2 
+	*/
+	void ManageWorkers()
+	{
+		// Balance Workers Against Structures, ie CPs and Refineries 
+		MultiplayerBot::ManageWorkers(UNIT_TYPEID::TERRAN_SCV, ABILITY_ID::HARVEST_GATHER, UNIT_TYPEID::TERRAN_REFINERY);
+
+		// Try To Use The Mule Call Down Whenever Possible On Orbital Command Centers
+		const ObservationInterface* observation = Observation();
+		Units orbitals = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ORBITALCOMMAND));
+		for (auto &unit : orbitals)
+		{
+			if (unit->energy > 50)
+			{
+				float rx = GetRandomScalar();
+				float ry = GetRandomScalar();
+
+				Actions()->UnitCommand(unit, ABILITY_ID::EFFECT_CALLDOWNMULE, Point2D(unit->pos.x + rx * 2, unit->pos.y + ry * 2));
+			}
+		}
+
+		// Try to Build Up To The Optimal Number of Workers Plus 2 For Construction
+		target_worker_count = GetExpectedWorkers(UNIT_TYPEID::TERRAN_REFINERY) + 2;
+		if (CountUnitType(UNIT_TYPEID::TERRAN_SCV) < target_worker_count) {
+			TryBuildUnit(ABILITY_ID::TRAIN_SCV, UNIT_TYPEID::TERRAN_COMMANDCENTER);
+			TryBuildUnit(ABILITY_ID::TRAIN_SCV, UNIT_TYPEID::TERRAN_ORBITALCOMMAND);
+		}
+
+	}
+
+	/*
+	Manage Upgrades
+	
+	Tries To Build Upgrades For Marines And Maruaders
+
+	- Only Builds Upgrades When Five Minutes Have Past And There Exists A Reasonable Marine Maruader Force
+	*/
+	void ManageUpgrades()
+	{
+		const ObservationInterface* observation = Observation();
+		// Setup - Get Upgrades Buildings and Unit Counts
+		Units engineering_bays = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ENGINEERINGBAY));
+		Units armories = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ARMORY));
+		Units barracks_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB));
+		Units factorys_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_FACTORYTECHLAB));
+
+		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
+		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
+
+
+		bool past_five_minutes = step_count > 1200 * 5;
+		size_t marine_maruader_count = marines.size() + maruaders.size();
+		bool significant_bio_force = marine_maruader_count > 25;
+
+		// Try To Build Upgrades If Army Is Sufficent And Game Has Progressed Far Enough
+		if (past_five_minutes)
+		{
+			if (engineering_bays.size() > 0 && significant_bio_force)
+			{
+				const Unit* engineering_bay = engineering_bays.front();
+				Actions()->UnitCommand(engineering_bay, ABILITY_ID::RESEARCH_TERRANINFANTRYWEAPONS);
+				Actions()->UnitCommand(engineering_bay, ABILITY_ID::RESEARCH_TERRANINFANTRYARMOR);
+			}
+
+			if (barracks_tech.size() > 0 && significant_bio_force)
+			{
+				const Unit* barracks_tech_lab = barracks_tech.front();
+				Actions()->UnitCommand(barracks_tech, ABILITY_ID::RESEARCH_COMBATSHIELD);
+				Actions()->UnitCommand(barracks_tech, ABILITY_ID::RESEARCH_CONCUSSIVESHELLS);
+			}
+		}
+	}
+
+	/*
+	Build Order
+
+	Tries To Build Buildings Following Heuristics
+
+	- Tries To Build Supply Depots When Near Supply Cap
+	- Tries To Build Other Structures Via Heuristics
+	- Tries To Expand Via Inherited Function
+	*/
+	void BuildOrder() {
+		const ObservationInterface* observation = Observation();
+		// Setup - Get Building Counts
+		Units bases = observation->GetUnits(Unit::Self, IsTownHall());
+		Units barracks = observation->GetUnits(Unit::Self, IsUnits(barrack_types));
+		Units factorys = observation->GetUnits(Unit::Self, IsUnits(factory_types));
+		Units starports = observation->GetUnits(Unit::Self, IsUnits(starport_types));
+		Units barracks_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB));
+		Units factorys_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_FACTORYTECHLAB));
+		Units starports_tech = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_STARPORTTECHLAB));
+		Units supply_depots = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SUPPLYDEPOT));
+		Units refinerys = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_REFINERY));
+		Units engineering_bays = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ENGINEERINGBAY));
+		Units armories = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ARMORY));
+		Units orbitals = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_ORBITALCOMMAND));
+
+		// Setup - Get Building Count Targets
+		size_t barracks_count_target = std::min<size_t>(2 * bases.size(), 8);
+		size_t factory_count_target = 1;
+		size_t engineering_bay_count_target = 1;
+		size_t armory_count_target = 1;
+        size_t starport_count_target = 1;
+
+		// Build
+
+
+		// Try Convert Command Center
+		if (!barracks.empty())
+		{
+			for (const auto& base : bases) {
+				if (base->unit_type == UNIT_TYPEID::TERRAN_COMMANDCENTER && observation->GetMinerals() > 150) {
+					Actions()->UnitCommand(base, ABILITY_ID::MORPH_ORBITALCOMMAND);
+				}
+			}
+		}
+
+		// Try Build Depot - Calculate our own total supply cap here to account for buildings in progress..
+		size_t FoodCapInProgress = supply_depots.size() * 8 + bases.size() * 15;
+
+		if (observation->GetFoodUsed() >= FoodCapInProgress - 3 && observation->GetFoodCap() != 200)
+		{
+			TryBuildStructure(ABILITY_ID::BUILD_SUPPLYDEPOT);
+
+			if (observation->GetMinerals() > 250 && observation->GetFoodUsed() == observation->GetFoodCap())
+			{
+				TryBuildStructure(ABILITY_ID::BUILD_SUPPLYDEPOT);
+			}
+		}
+
+		// Try Build Refinery - Do not over build refineries, keep pace with orbital command centers
+		if (barracks.size() >= 2 && orbitals.size() >= 1 && refinerys.size() < orbitals.size())
+		{
+			for (auto u : bases)
+			{
+				TryBuildGas(ABILITY_ID::BUILD_REFINERY, UNIT_TYPEID::TERRAN_SCV, Point2D(u->pos.x, u->pos.y));
+			}
+		}
+
+		// Try Build Barracks - Try To Build Barracks Depending On Number Of Bases
+		if (barracks.size() < barracks_count_target && observation->GetMinerals() > 170)
+		{
+			TryBuildStructure(ABILITY_ID::BUILD_BARRACKS);
+		}
+
+		// Try Build Factory - Try To Build Factories Only After Having Sufficent Barracks
+		if (factorys.size() < factory_count_target && barracks.size() > 3)
+		{
+			TryBuildStructure(ABILITY_ID::BUILD_FACTORY);
+		}
+
+        // Try Build Starport - Try To Build Starports Only After Having Sufficent Factories
+        if (starports.size() < starport_count_target && factorys.size() > 0)
+        {
+            TryBuildStructure(ABILITY_ID::BUILD_STARPORT);
+        }
+
+		// Try Build Engineering Bay
+		if (engineering_bays.size() < engineering_bay_count_target && barracks.size() > 3)
+		{
+			TryBuildStructure(ABILITY_ID::BUILD_ENGINEERINGBAY);
+		}
+
+		// Try Build Armory
+		if (armories.size() < armory_count_target && bases.size() > 2 && factorys.size() > 0 && engineering_bays.size() > 0)
+		{
+			TryBuildStructure(ABILITY_ID::BUILD_ARMORY);
+		}
+
+		// Try Expand
+		if (barracks.size() >= 2 && bases.size() <= 3 && observation->GetMinerals() > 400 * bases.size())
+		{
+			TryExpand(ABILITY_ID::BUILD_COMMANDCENTER, UNIT_TYPEID::TERRAN_SCV);
+		}
+
+
+		// Try Build Barracks Addons
+		// Moved To Barracks On Idle
+
+		// Try Build Factory Addons
+		// Moved To Factory On Idle
+	}
+
+	/*
+	Manage Rally Points
+
+	Manages The Staging Point Location Used To Rally Newly Created Troops
+
+	- Tries to place the rally point to the closest expansion to the middle of the map
+	- Shifts units slightly such that they are in front of the base, closer to the map center.
+	*/
+	void ManageRallyPoints()
+	{
+		const ObservationInterface* observation = Observation();
+		Units bases = observation->GetUnits(Unit::Self, IsTownHall());
+
+		if (bases.size() == 1)
+		{
+			return;
+		}
+
+		if (bases.size() > 1)
+		{
+			const Unit* base_closest_to_mid = bases.front();
+
+			for (const Unit *u : bases)
+			{
+				if (Distance2D(u->pos, getMapCenter(observation)) < (Distance2D(base_closest_to_mid->pos, getMapCenter(observation))))
+				{
+					base_closest_to_mid = u;
+				}
+			}
+
+
+			Point2D unit_vector_to_map_center = pointTowards(base_closest_to_mid->pos, getMapCenter(Observation()));
+
+			staging_location_.x = base_closest_to_mid->pos.x + unit_vector_to_map_center.x * 5.0f;
+			staging_location_.y = base_closest_to_mid->pos.y + unit_vector_to_map_center.y * 4.0f;
+		}
+
+	}
+
+	/*
+	Manage Scouts
+
+	Sends Scouts To Scout The Map
+
+	- Tries to scout potentical enemy spawns if the game is relatively early.
+	- Tries to scout random pathable locations if the game has gone on for sometime.
+	- If a game has gone on for some time, we likely have constant contact with the enemy already
+	or their original base may have been destroyed. Hence we use randomness here to help uncover more area.
+
+	*/
+	void ManageScouts()
+	{
+		const ObservationInterface* observation = Observation();
+
+		bool in_first_15_minutes = step_count < 1200 * 15;
+
+		if (in_first_15_minutes)
+		{
+			for (Point2D point : game_info_.enemy_start_locations)
+			{
+				const Unit* unit;
+				GetRandomUnit(unit, observation, UNIT_TYPEID::TERRAN_MARINE);
+
+				if (unit && unit->orders.empty())
+				{
+					Actions()->UnitCommand(unit, ABILITY_ID::SMART, point);
+				}
+			}
+		}
+		else
+		{
+			for (int i = 0; i < 3; i++)
+			{
+				const Unit* unit;
+				GetRandomUnit(unit, observation, UNIT_TYPEID::TERRAN_MARINE);
+
+				if (unit && unit->orders.empty())
+				{
+					ScoutWithUnit(unit, observation);
+				}
+
+			}
+		}
+
+
+	}
+
+	/*
+	Mange Idle Army Units
+
+	Rallies Army Units To The Staging Location If They Have No Other Orders
+
+	*/
+	void ManageIdleArmyUnits()
+	{
+		const ObservationInterface* observation = Observation();
+
+		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
+		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
+		Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
+
+		for (const Unit* unit : marines)
+		{
+			if (unit->orders.empty())
+			{
+				GoToPoint(unit, staging_location_);
+			}
+		}
+
+		for (const Unit* unit : maruaders)
+		{
+			if (unit->orders.empty())
+			{
+				GoToPoint(unit, staging_location_);
+			}
+		}
+
+		for (const Unit* unit : tanks)
+		{
+			if (unit->orders.empty())
+			{
+				GoToPoint(unit, staging_location_);
+			}
+		}
+
+        for (const Unit* unit : vikings)
+        {
+            if (unit->orders.empty())
+            {
+                GoToPoint(unit, staging_location_);
+            }
+        }
+	}
+
+	/*
+	Manage Defense
+
+	Uses Idle Units To Defend Bases And Unit Staging Lcoation
+
+	- Checks Each Enemy Unit Location, if close to base or staging attacks using Idle Units.
+
+	*/
+	void ManageDefense()
+	{
+		const ObservationInterface* observation = Observation();
+
+		Units bases = observation->GetUnits(Unit::Self, IsTownHall());
+
+		Units marines = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARINE));
+		Units maruaders = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_MARAUDER));
+		Units tanks = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_SIEGETANK));
+        Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
+
+		Units enemy_units = observation->GetUnits(Unit::Enemy);
+
+		for (const Unit* enemy_unit : enemy_units)
+		{
+			bool close_to_staging_point = Distance2D(enemy_unit->pos, staging_location_) < 20.0f;
+			bool close_to_base =  close_to_base = isCloseToBase(enemy_unit);
+
+			if (close_to_staging_point || close_to_base)
+			{
+				for (const Unit* army_unit : marines)
+				{
+					if (army_unit->orders.empty())
+					{
+						GoToPoint(army_unit, enemy_unit->pos);
+					}
+				}
+
+				for (const Unit* army_unit : maruaders)
+				{
+					if (army_unit->orders.empty())
+					{
+						GoToPoint(army_unit, enemy_unit->pos);
+					}
+				}
+
+				for (const Unit* army_unit : tanks)
+				{
+					if (army_unit->orders.empty())
+					{
+						GoToPoint(army_unit, enemy_unit->pos);
+					}
+				}
+
+                for (const Unit* army_unit : vikings)
+                {
+                    if (army_unit->orders.empty())
+                    {
+                        GoToPoint(army_unit, enemy_unit->pos);
+                    }
+                }
+			}
+		}
+	}
+
+	// Per Factory Functions
+	void HandleBarracks(const Unit* unit)
+	{
+		size_t tech_lab_count = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSTECHLAB) + 1;
+		size_t reactor_count  = CountUnitType(UNIT_TYPEID::TERRAN_BARRACKSREACTOR) + 1;
+
+		size_t marine_count   = CountUnitType(UNIT_TYPEID::TERRAN_MARINE) + 1;
+		size_t maruader_count = CountUnitType(UNIT_TYPEID::TERRAN_MARAUDER) + 1;
+
+
+		if ((tech_lab_count / reactor_count) < 2)
+		{
+			TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_BARRACKS, unit->tag);
+		}
+		else
+		{
+			TryBuildAddOn(ABILITY_ID::BUILD_REACTOR_BARRACKS, unit->tag);
+		}
+
+		if (marine_count / maruader_count > marine_to_maruader_ratio)
+		{
+			Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARAUDER);
+		}
+
+		if (unit->orders.empty())
+		{
+			Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_MARINE);
+		}
+
+	}
+
+	void HandleFactory(const Unit* unit)
+	{
+		TryBuildAddOn(ABILITY_ID::BUILD_TECHLAB_FACTORY, unit->tag);
+		Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_SIEGETANK);
+	}
+
+    void HandleStarport(const Unit* unit)
+    {
+        Actions()->UnitCommand(unit, ABILITY_ID::TRAIN_VIKINGFIGHTER);
+    }
+
+	// Per Unit Functions
+
+	void GoToPoint(const Unit* unit, Point2D point)
+	{
+		Actions()->UnitCommand(unit, ABILITY_ID::ATTACK_ATTACK, point);
+	}
+
+	void OnWorkerIdle(const Unit* unit)
+	{
+		const Unit* mineral_target = FindNearestMineralPatch(unit->pos);
+		if (!mineral_target)
+			return;
+
+		Actions()->UnitCommand(unit, ABILITY_ID::SMART, mineral_target);
+	}
+
+	// Helper Functions
+	const Unit* FindNearestMineralPatch(const Point2D& start) {
+		Units units = Observation()->GetUnits(Unit::Alliance::Neutral);
+		float distance = std::numeric_limits<float>::max();
+		const Unit* target = nullptr;
+		for (const auto& u : units) {
+			if (u->unit_type == UNIT_TYPEID::NEUTRAL_MINERALFIELD) {
+				float d = DistanceSquared2D(u->pos, start);
+				if (d < distance) {
+					distance = d;
+					target = u;
+				}
+			}
+		}
+		return target;
+	}
+
+	size_t CountUnitType(UNIT_TYPEID unit_type) {
+		return Observation()->GetUnits(Unit::Alliance::Self, IsUnit(unit_type)).size();
+	}
+
+	bool TryBuildStructure(ABILITY_ID ability_type_for_structure, UNIT_TYPEID unit_type = UNIT_TYPEID::TERRAN_SCV) {
+		const ObservationInterface* observation = Observation();
+
+		// If a unit already is building a supply structure of this type, do nothing.
+		// Also get an scv to build the structure.
+		const Unit* unit_to_build = nullptr;
+		Units units = observation->GetUnits(Unit::Alliance::Self);
+		for (const auto& unit : units) {
+			for (const auto& order : unit->orders) {
+				if (order.ability_id == ability_type_for_structure) {
+					continue;
+				}
+			}
+
+			if (unit->unit_type == unit_type) {
+				unit_to_build = unit;
+			}
+		}
+
+		float rx = GetRandomScalar();
+		float ry = GetRandomScalar();
+
+		if (unit_to_build)
+		{
+			Actions()->UnitCommand(unit_to_build,
+				ability_type_for_structure,
+				Point2D(unit_to_build->pos.x + rx * 10.0f, unit_to_build->pos.y + ry * 10.0f));
+		}
+
+
+		return true;
+	}
+
+	bool TryBuildAddOn(AbilityID ability_type_for_structure, Tag base_structure) {
+		float rx = GetRandomScalar();
+		float ry = GetRandomScalar();
+		const Unit* unit = Observation()->GetUnit(base_structure);
+
+		if (unit->build_progress != 1) {
+			return false;
+		}
+
+		Point2D build_location = Point2D(unit->pos.x + rx * 15, unit->pos.y + ry * 15);
+
+		Units units = Observation()->GetUnits(Unit::Self, IsStructure(Observation()));
+
+		if (Query()->Placement(ability_type_for_structure, unit->pos, unit)) {
+			Actions()->UnitCommand(unit, ability_type_for_structure);
+			return true;
+		}
+
+		float distance = std::numeric_limits<float>::max();
+		for (const auto& u : units) {
+			float d = Distance2D(u->pos, build_location);
+			if (d < distance) {
+				distance = d;
+			}
+		}
+		if (distance < 6) {
+			return false;
+		}
+
+		if (Query()->Placement(ability_type_for_structure, build_location, unit)) {
+			Actions()->UnitCommand(unit, ability_type_for_structure, build_location);
+			return true;
+		}
+		return false;
+
+	}
+
+	void FlushKnownEnemyLocations()
+	{
+		size_t number_of_positions_to_flush = floor(enemy_unit_locations.size() * 0.9);
+
+		for (size_t i = 0; i < number_of_positions_to_flush; i++)
+		{
+			if (!enemy_unit_locations.empty())
+			{
+				enemy_unit_locations.pop();
+			}
+		}
+	}
+
+
+	// Constant Types From Example Terran Bot
+	std::vector<UNIT_TYPEID> barrack_types = { UNIT_TYPEID::TERRAN_BARRACKSFLYING, UNIT_TYPEID::TERRAN_BARRACKS };
+	std::vector<UNIT_TYPEID> factory_types = { UNIT_TYPEID::TERRAN_FACTORYFLYING, UNIT_TYPEID::TERRAN_FACTORY };
+	std::vector<UNIT_TYPEID> starport_types = { UNIT_TYPEID::TERRAN_STARPORTFLYING, UNIT_TYPEID::TERRAN_STARPORT };
+	std::vector<UNIT_TYPEID> supply_depot_types = { UNIT_TYPEID::TERRAN_SUPPLYDEPOT, UNIT_TYPEID::TERRAN_SUPPLYDEPOTLOWERED };
+	std::vector<UNIT_TYPEID> bio_types = { UNIT_TYPEID::TERRAN_MARINE, UNIT_TYPEID::TERRAN_MARAUDER, UNIT_TYPEID::TERRAN_GHOST, UNIT_TYPEID::TERRAN_REAPER /*reaper*/ };
+	std::vector<UNIT_TYPEID> widow_mine_types = { UNIT_TYPEID::TERRAN_WIDOWMINE, UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED };
+	std::vector<UNIT_TYPEID> siege_tank_types = { UNIT_TYPEID::TERRAN_SIEGETANK, UNIT_TYPEID::TERRAN_SIEGETANKSIEGED };
+	std::vector<UNIT_TYPEID> viking_types = { UNIT_TYPEID::TERRAN_VIKINGASSAULT, UNIT_TYPEID::TERRAN_VIKINGFIGHTER };
+	std::vector<UNIT_TYPEID> hellion_types = { UNIT_TYPEID::TERRAN_HELLION, UNIT_TYPEID::TERRAN_HELLIONTANK };
 };
 
 int main(int argc, char* argv[]) {
-    Coordinator coordinator;
-    coordinator.LoadSettings(argc, argv);
+	Coordinator coordinator;
+	coordinator.LoadSettings(argc, argv);
 
-    Bot bot;
-    coordinator.SetParticipants({
-        CreateParticipant(Race::Terran, &bot),
-        CreateComputer(Race::Zerg)
-    });
+	Bot bot;
+	coordinator.SetParticipants({
+		CreateParticipant(Race::Terran, &bot),
+		CreateComputer(Race::Protoss, Difficulty::Hard)
+		});
 
-    coordinator.LaunchStarcraft();
-    coordinator.StartGame("Ladder/CactusValleyLE.SC2Map");
+	coordinator.LaunchStarcraft();
+	coordinator.StartGame("Ladder/CactusValleyLE.SC2Map");
 
-    while (coordinator.Update()) {
-    }
+	while (coordinator.Update()) {}
 
-    return 0;
+	return 0;
 }
