@@ -374,7 +374,7 @@ private: // Private Functions of Bot
         Units vikings = observation->GetUnits(Unit::Self, IsUnit(UNIT_TYPEID::TERRAN_VIKINGFIGHTER));
 
 		bool past_six_minutes = step_count > 1200 * 6;
-		bool significant_army = marines.size() + maruaders.size() > 20;
+		bool significant_army = marines.size() + maruaders.size() > 25;
 
 		// Check Attack Preconditions
 		if (past_six_minutes && significant_army)
