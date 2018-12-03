@@ -64,6 +64,10 @@ private: // Bot Global Variables
     // Enemy unit quantity threshold for siege mode
     int siege_threshold = 5;
 
+    // Enemy Base Location
+    Point2D enemy_base_loc;
+    bool found_enemy_base = false;
+
 	// Constants Inherited
 	// staging_location_ : Point2D location used for rallying created troops
 
@@ -173,12 +177,35 @@ public: // Public Functions Of Bot - On Event Handles Provided By Interface
 		}
 	}
 
+    Point2D getClosestStartLoc(const Point2D point) {
+        Point2D closest;
+        bool first = false;
+        for (Point2D loc : game_info_.enemy_start_locations)
+        {
+            if (first) {
+                closest = loc;
+            }
+            else {
+                closest = Distance2D(closest, point) < Distance2D(loc, point) ? closest : loc;
+            }
+        }
+        return closest;
+    }
+
 	virtual void OnUnitDestroyed(const sc2::Unit *unit)
 	{
         // Unit could have been killed by something outside its LOS, consider this a hostile location.
         if (!isCloseToBase(unit))
         {
-            enemy_unit_locations.push(unit->pos);
+            if (!found_enemy_base)
+            {
+                enemy_base_loc = getClosestStartLoc(unit->pos);
+                found_enemy_base = true;
+            }
+            else
+            {
+                enemy_unit_locations.push(unit->pos);
+            }
         }
 	}
 
@@ -393,13 +420,19 @@ private: // Private Functions of Bot
                 }
             }
 
-			if (enemy_unit_locations.size() > 0 || found_structure)
+			if (enemy_unit_locations.size() > 0 || found_structure || found_enemy_base)
 			{
                 if (!found_structure) {
-                    if (enemy_unit_locations.size() == 1)
+                    // If we havent seen any units recently but we know where their base is, attack that.
+                    if (enemy_unit_locations.size() == 0) {
+                        attack_location = enemy_base_loc;
+                    }
+                    // If there is only one unit location in the queue, attack there
+                    else if (enemy_unit_locations.size() == 1)
                     {
                         attack_location = enemy_unit_locations.front();
                     }
+                    // If there are multiple unit location in the queue, pick one at random
                     else
                     {
                         size_t skip = GetRandomInteger(0, enemy_unit_locations.size() - 1);
@@ -1020,7 +1053,7 @@ int main(int argc, char* argv[]) {
 	Bot bot;
 	coordinator.SetParticipants({
 		CreateParticipant(Race::Terran, &bot),
-		CreateComputer(Race::Protoss, Difficulty::Hard)
+		CreateComputer(Race::Terran, Difficulty::VeryHard)
 		});
 
 	coordinator.LaunchStarcraft();
